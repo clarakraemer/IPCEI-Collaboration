@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 import pandas as pd
-import re
-import ast
 
 from ipcei_spillovers.io import load_df, save_df, data_path
 from ipcei_spillovers.config_logging import setup_logging
@@ -312,50 +310,6 @@ def _to_int01(s: pd.Series) -> pd.Series:
     """Convert typical 0/1 fields to Int64 safely."""
     return pd.to_numeric(s, errors="coerce").fillna(0).astype("Int64")
 
-def _split_staff_count_range(df: pd.DataFrame, col: str = "staffCountRange") -> pd.DataFrame:
-    """
-    Split staffCountRange into numeric start/end columns.
-
-    Handles formats like:
-      - "{'start': 11, 'end': 50}"  (stringified dict)
-      - "11-50"
-      - "11 – 50"
-      - "11 to 50"
-    """
-    if col not in df.columns:
-        return df
-
-    out = df.copy()
-    s = out[col].astype("string").str.strip()
-
-    start = pd.Series(pd.NA, index=out.index, dtype="Int64")
-    end = pd.Series(pd.NA, index=out.index, dtype="Int64")
-
-    # Case A: stringified dict -> use literal_eval safely
-    mask_dict = s.str.startswith("{", na=False) & s.str.contains("start", na=False) & s.str.contains("end", na=False)
-    if mask_dict.any():
-        def _parse_dict(x):
-            try:
-                d = ast.literal_eval(str(x))
-                return d.get("start"), d.get("end")
-            except Exception:
-                return (pd.NA, pd.NA)
-
-        parsed = s[mask_dict].apply(_parse_dict)
-        start.loc[mask_dict] = parsed.apply(lambda t: t[0]).astype("Int64")
-        end.loc[mask_dict] = parsed.apply(lambda t: t[1]).astype("Int64")
-
-    # Case B: other strings containing two numbers (e.g. "11-50", "11 to 50")
-    mask_other = ~mask_dict & s.notna()
-    if mask_other.any():
-        nums = s[mask_other].str.extract(r"(?P<start>\d+)\D+(?P<end>\d+)")
-        start.loc[mask_other] = pd.to_numeric(nums["start"], errors="coerce").astype("Int64")
-        end.loc[mask_other] = pd.to_numeric(nums["end"], errors="coerce").astype("Int64")
-
-    out["staffCountRange_start"] = start
-    out["staffCountRange_end"] = end
-    return out
-
 
 def _valid_latlon(df: pd.DataFrame) -> pd.Series:
     """
@@ -549,7 +503,7 @@ def slim_tables(
             "meta_update",
         ]
     if keep_meta is None:
-        keep_meta = [JOIN_KEY, "staffCount", "staffCountRange"]
+        keep_meta = [JOIN_KEY, "staffCount"]
     if keep_locations is None:
         keep_locations = [
             JOIN_KEY,
@@ -579,7 +533,6 @@ def slim_tables(
     meta = _drop_bad_keys(meta, JOIN_KEY)
     _ensure_join_key(meta, "meta")
     meta = meta[[c for c in keep_meta if c in meta.columns]]
-    meta = _split_staff_count_range(meta, col="staffCountRange")
     out["meta"] = meta
 
     # Locations (can be many rows per firm)

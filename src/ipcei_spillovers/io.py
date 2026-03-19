@@ -7,7 +7,7 @@ from ipcei_spillovers.config_paths import PATHS
 # ---------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------
-Stage = Literal["raw", "intermediate", "processed"]
+Stage = Literal["raw", "interim", "processed"]
 ResultsKind = Literal["figures", "tables"]
 
 __all__ = ["data_path", "results_path", "load_df", "save_df"]
@@ -74,6 +74,7 @@ def save_df(
     suffix = path.suffix.lower()
 
     if suffix == ".csv":
+        write_kwargs.setdefault("encoding", "utf-8-sig")
         df.to_csv(path, index=index, **write_kwargs)
     elif suffix == ".parquet":
         df.to_parquet(path, index=index, **write_kwargs)
@@ -84,4 +85,11 @@ def save_df(
     else:
         raise ValueError(f"Unsupported file extension: {suffix}")
 
+    return path
+
+def save_fig(fig, *parts, dpi=300):
+    path = results_path("figures", *parts)
+    path = path.with_suffix(".pdf")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
     return path
