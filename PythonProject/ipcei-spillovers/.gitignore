@@ -1,0 +1,39 @@
+# ===============================
+# Python / build / caches
+# ===============================
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+
+# ===============================
+# Virtual environments
+# ===============================
+.venv/
+venv/
+
+# ===============================
+# Jupyter
+# ===============================
+.ipynb_checkpoints/
+
+# ===============================
+# IDE / OS
+# ===============================
+.idea/
+.DS_Store
+
+# ===============================
+# PROJECT RULES
+# ===============================
+
+# Never commit data
+src/data/
+
+# Never commit results
+results/
+
+# Logs
+*.log

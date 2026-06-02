@@ -26,14 +26,22 @@ venv/
 .DS_Store
 
 # ===============================
-# PROJECT RULES
+# PROJECT RULES — data + outputs stay out, both sides
 # ===============================
-
-# Never commit data
-src/data/
-
-# Never commit results
-results/
+# Python side
+PythonProject/ipcei-spillovers/src/data/
+PythonProject/ipcei-spillovers/results/
+# R side
+R/data/
+R/results/
 
 # Logs
 *.log
+
+# ===============================
+# R / RStudio session cruft
+# ===============================
+.Rhistory
+.RData
+.RDataTmp
+.Rproj.user/

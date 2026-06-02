@@ -1,0 +1,1384 @@
+---
+title: "IPCEI Collaboration Analysis — Combined Channel and Spillover Outcomes"
+subtitle: "Technology-Focused · Cross-Sector · Cross-Border EU · Non-EU · Callaway & Sant'Anna DiD"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+# 0. Setup
+
+```{r packages}
+library(did)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(rbounds)
+
+set.seed(42)
+
+PATH_BATTERY_S1       <- "../data/battery_spec1_cs_ready.csv"
+PATH_HYDROGEN_S1      <- "../data/hydrogen_spec1_cs_ready.csv"
+PATH_BATTERY_FIRMS_S2  <- "../data/battery_spec2_matched_firms.csv"
+PATH_HYDROGEN_FIRMS_S2 <- "../data/hydrogen_spec2_matched_firms.csv"
+PATH_BATTERY_S2  <- "../data/battery_spec2_cs_ready.csv"
+PATH_HYDROGEN_S2 <- "../data/hydrogen_spec2_cs_ready.csv"
+
+dir.create("../results/composition", showWarnings = FALSE, recursive = TRUE)
+```
+
+---
+
+# 1. Load & Prepare Data
+
+```{r load-data}
+load_cs <- function(path) {
+  df <- read.csv(path, stringsAsFactors = FALSE)
+  df$month <- as.Date(df$month)
+
+  df$period <- as.integer(format(df$month, "%Y")) * 100 +
+               as.integer(format(df$month, "%m"))
+
+  df$g <- as.character(df$g)
+  df$g[df$g == "" | df$g == "NA"] <- NA
+  df$g_period <- ifelse(
+    is.na(df$g), 0L,
+    as.integer(format(as.Date(df$g), "%Y")) * 100 +
+    as.integer(format(as.Date(df$g), "%m"))
+  )
+
+  df$firm_id <- as.integer(factor(df$Linkedin_name))
+
+  # ── Reference outcome ───────────────────────────────────────────────────────
+  df$log_collabs <- log1p(df$n_collabs)
+
+  # ── Technology-focused collaborations ───────────────────────────────────────
+  df$log_collabs_hydrogen <- log1p(df$n_collabs_hydrogen)
+  df$log_collabs_battery  <- log1p(df$n_collabs_battery)
+
+  # ── Cross-border collaborations ──────────────────────────────────────────
+  df$log_collabs_eu_crossborder <- log1p(df$n_collabs_eu_crossborder)
+  df$log_collabs_non_eu   <- log1p(df$n_collabs_non_eu) 
+  df$log_collabs_domestic <- log1p(df$n_collabs_domestic)
+
+  # ── Cross-sector collaborations ─────────────────────────────────────────────
+  df$log_collabs_crosssector  <- log1p(df$n_collabs_crosssector)
+  df$log_collabs_withinsector <- log1p(df$n_collabs_withinsector) #Placebo
+
+  df
+}
+
+battery_s2  <- load_cs(PATH_BATTERY_S2)
+hydrogen_s2 <- load_cs(PATH_HYDROGEN_S2)
+
+cat("\nColumns in battery dataset:\n")
+print(colnames(battery_s2))
+cat("\nColumns in hydrogen dataset:\n")
+print(colnames(hydrogen_s2))
+
+cat("Battery S2: ", n_distinct(battery_s2$Linkedin_name),
+    "firms,", n_distinct(battery_s2$period), "periods\n")
+cat("Hydrogen S2:", n_distinct(hydrogen_s2$Linkedin_name),
+    "firms,", n_distinct(hydrogen_s2$period), "periods\n")
+
+# Zero-share diagnostics
+cat("\n--- Zero shares for combined outcomes (treated firms only) ---\n")
+outcome_cols <- c(
+  "n_collabs",
+  "n_collabs_battery",
+  "n_collabs_hydrogen",
+  "n_collabs_eu_crossborder",
+  "n_collabs_crosssector",
+  "n_collabs_withinsector",
+  "n_collabs_non_eu",
+  "n_collabs_domestic"
+)
+
+for (col in outcome_cols) {
+  if (col %in% names(battery_s2)) {
+    zs_b <- mean(battery_s2[battery_s2$is_treated == 1, col] == 0)
+    zs_h <- mean(hydrogen_s2[hydrogen_s2$is_treated == 1, col] == 0)
+    cat(sprintf("  %-30s  Battery treated: %.1f%%  Hydrogen treated: %.1f%%\n",
+                col, zs_b * 100, zs_h * 100))
+  }
+}
+
+# Baseline cross-sector share (treated vs control, 2020)
+cat("\n--- Baseline cross-sector collab share (2020, treated vs control) ---\n")
+for (tech in list(list(battery_s2, "Battery"),
+                  list(hydrogen_s2, "Hydrogen"))) {
+  df_check <- tech[[1]]
+  lbl      <- tech[[2]]
+  bl <- df_check %>%
+    filter(format(month, "%Y") == "2020") %>%
+    mutate(cs_share = ifelse(n_collabs > 0,
+                             n_collabs_crosssector / n_collabs,
+                             NA_real_)) %>%
+    group_by(is_treated) %>%
+    summarise(mean_cs_share = round(mean(cs_share, na.rm = TRUE), 3),
+              .groups = "drop")
+  cat(lbl, ":\n"); print(bl)
+}
+```
+
+> **Note on zero shares:** Higher zero shares than total collaborations are expected for the more specific outcomes. C&S handles zeros via `log1p`. For outcomes exceeding roughly 85% zeros among treated firms, effects are best interpreted as extensive-margin changes.
+
+> **Note on cross-sector construction:** Cross-sector collaborations use NACE 2-digit codes mapped from LinkedIn industry categories, restricted to value-chain-relevant industries present among IPCEI-treated firms. Firms outside this mapped set are excluded from both cross- and within-sector counts.
+
+---
+
+# 2. C&S Estimation — Helper Functions
+
+```{r cs-function}
+
+run_cs <- function(df, yname = "log_collabs", label = "",
+                   control_group = "notyettreated",
+                   clustervars   = NULL) {
+  cat("\n=== C&S:", label, "===\n")
+  cs_out <- att_gt(
+    yname         = yname,
+    tname         = "period",
+    idname        = "firm_id",
+    gname         = "g_period",
+    control_group = control_group,
+    clustervars   = clustervars,
+    bstrap        = TRUE,
+    biters        = 999,
+    panel         = TRUE,
+    pl            = TRUE,
+    data          = df
+  )
+  print(summary(cs_out))
+  cs_out
+}
+
+# ── Aggregators ─────────────────────────────────────────────────────────────
+agg_simple  <- function(cs_out) aggte(cs_out, type = "simple")
+
+agg_dynamic <- function(cs_out) aggte(cs_out, type = "dynamic",
+                                      min_e = -12, max_e = 24)
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+pval_from_att <- function(att, se) {
+  round(2 * pnorm(-abs(att / se)), 3)
+}
+
+sample_stats <- function(df, yname) {
+  df_use <- df %>%
+    filter(
+      !is.na(.data[[yname]]),
+      !is.na(firm_id),
+      !is.na(period),
+      !is.na(g_period)
+    )
+
+  data.frame(
+    N_obs     = nrow(df_use),
+    N_units   = n_distinct(df_use$firm_id),
+    N_treated = n_distinct(df_use$firm_id[df_use$g_period > 0]),
+    stringsAsFactors = FALSE
+  )
+}
+
+# ── ATT row builder (UPDATED) ───────────────────────────────────────────────
+make_att_row <- function(agg_obj, technology, outcome, type = "Primary S2",
+                         cs_out = NULL, df = NULL, yname = NULL) {
+
+  stats <- if (!is.null(df) && !is.null(yname)) {
+    sample_stats(df, yname)
+  } else {
+    data.frame(N_obs = NA_integer_, N_units = NA_integer_, N_treated = NA_integer_)
+  }
+
+  data.frame(
+    Technology       = technology,
+    Outcome          = outcome,
+    Type             = type,
+    ATT              = round(agg_obj$overall.att, 4),
+    SE               = round(agg_obj$overall.se,  4),
+    p_value          = pval_from_att(agg_obj$overall.att, agg_obj$overall.se),
+    pretrend_stat    = if (!is.null(cs_out) && !is.null(cs_out$W))     round(cs_out$W, 3)     else NA_real_,
+    pretrend_p_value = if (!is.null(cs_out) && !is.null(cs_out$Wpval)) round(cs_out$Wpval, 3) else NA_real_,
+    N_obs            = stats$N_obs,
+    N_units          = stats$N_units,
+    N_treated        = stats$N_treated,
+    stringsAsFactors = FALSE
+  )
+}
+
+# ── Plotting helpers ────────────────────────────────────────────────────────
+plot_cs <- function(agg_dyn, title) {
+  ggdid(agg_dyn, title = title) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", colour = "grey40") +
+    theme_minimal(base_size = 12) +
+    labs(x = "Months relative to treatment", y = "ATT(g,t)")
+}
+
+make_plot_df <- function(agg_dyn, label) {
+  data.frame(
+    e       = agg_dyn$egt,
+    att     = agg_dyn$att.egt,
+    se      = agg_dyn$se.egt,
+    cil     = agg_dyn$att.egt - 1.96 * agg_dyn$se.egt,
+    ciu     = agg_dyn$att.egt + 1.96 * agg_dyn$se.egt,
+    outcome = label
+  )
+}
+
+make_combined_plot <- function(plot_df, title, ncol = 2) {
+  ggplot(plot_df,
+         aes(x = e, y = att, ymin = cil, ymax = ciu,
+             colour = outcome, fill = outcome)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = -0.5, linetype = "dashed", colour = "grey40") +
+    geom_ribbon(alpha = 0.15, colour = NA) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 1.5) +
+    facet_wrap(~outcome, ncol = ncol, scales = "free_y") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none") +
+    labs(title = title,
+         x = "Months relative to treatment",
+         y = "ATT(g,t)")
+}
+```
+
+---
+
+# 3. Combined Main Outcomes
+
+## 3.1 Technology-Focused Collaborations
+
+**Hypothesis:** IPCEI subsidises technology-specific R&D consortia directly, so treated firms should increase collaborations within their own technology domain more than matched controls.
+
+```{r cs-tech}
+cs_battery_tech  <- run_cs(battery_s2,
+                           yname = "log_collabs_battery",
+                           label = "Battery S2 — technology-focused collaborations")
+cs_hydrogen_tech <- run_cs(hydrogen_s2,
+                           yname = "log_collabs_hydrogen",
+                           label = "Hydrogen S2 — technology-focused collaborations")
+
+agg_battery_tech_simple  <- agg_simple(cs_battery_tech)
+agg_hydrogen_tech_simple <- agg_simple(cs_hydrogen_tech)
+agg_battery_tech_dyn     <- agg_dynamic(cs_battery_tech)
+agg_hydrogen_tech_dyn    <- agg_dynamic(cs_hydrogen_tech)
+```
+
+```{r plot-tech}
+p_tech_b <- plot_cs(agg_battery_tech_dyn,
+                    "Battery IPCEI — Technology-focused collaborations")
+p_tech_h <- plot_cs(agg_hydrogen_tech_dyn,
+                    "Hydrogen IPCEI — Technology-focused collaborations")
+
+print(p_tech_b)
+print(p_tech_h)
+
+ggsave("../results/composition/cs_battery_technologyfocused_eventstudy.pdf",
+       p_tech_b, width = 10, height = 6)
+ggsave("../results/composition/cs_hydrogen_technologyfocused_eventstudy.pdf",
+       p_tech_h, width = 10, height = 6)
+```
+
+## 3.2 Cross-Border EU Collaborations
+
+**Hypothesis:** IPCEI explicitly targets cross-border collaboration within the EU single market. Treated firms should increase collaborations with partners in other EU member states more than matched controls.
+
+```{r cs-crossborder}
+cs_battery_cb          <- run_cs(battery_s2,
+                                 yname = "log_collabs_eu_crossborder",
+                                 label = "Battery S2 — cross-border EU collaborations")
+cs_hydrogen_cb         <- run_cs(hydrogen_s2,
+                                 yname = "log_collabs_eu_crossborder",
+                                 label = "Hydrogen S2 — cross-border EU collaborations")
+
+agg_battery_cb_simple          <- agg_simple(cs_battery_cb)
+agg_hydrogen_cb_simple         <- agg_simple(cs_hydrogen_cb)
+agg_battery_cb_dyn             <- agg_dynamic(cs_battery_cb)
+agg_hydrogen_cb_dyn            <- agg_dynamic(cs_hydrogen_cb)
+```
+
+```{r plot-crossborder}
+p_cb_b   <- plot_cs(agg_battery_cb_dyn,
+                    "Battery IPCEI — Cross-border EU collaborations")
+p_cb_h   <- plot_cs(agg_hydrogen_cb_dyn,
+                    "Hydrogen IPCEI — Cross-border EU collaborations")
+
+print(p_cb_b);   print(p_cb_h)
+
+ggsave("../results/composition/cs_battery_crossbordereu_eventstudy.pdf",
+       p_cb_b, width = 10, height = 6)
+ggsave("../results/composition/cs_hydrogen_crossbordereu_eventstudy.pdf",
+       p_cb_h, width = 10, height = 6)
+```
+
+## 3.3 Cross-Sector Collaborations
+
+**Hypothesis:** IPCEI targets value-chain integration across sectors. Treated firms should increase collaborations with partners in different NACE 2-digit categories more than matched controls.
+
+```{r cs-crosssector}
+cs_battery_xs  <- run_cs(battery_s2,
+                         yname = "log_collabs_crosssector",
+                         label = "Battery S2 — cross-sector collaborations")
+cs_hydrogen_xs <- run_cs(hydrogen_s2,
+                         yname = "log_collabs_crosssector",
+                         label = "Hydrogen S2 — cross-sector collaborations")
+cs_battery_ws  <- run_cs(battery_s2,
+                         yname = "log_collabs_withinsector",
+                         label = "Battery S2 — within-sector collaborations (placebo)")
+cs_hydrogen_ws <- run_cs(hydrogen_s2,
+                         yname = "log_collabs_withinsector",
+                         label = "Hydrogen S2 — within-sector collaborations (placebo)")
+
+agg_battery_xs_simple  <- agg_simple(cs_battery_xs)
+agg_hydrogen_xs_simple <- agg_simple(cs_hydrogen_xs)
+agg_battery_ws_simple  <- agg_simple(cs_battery_ws)
+agg_hydrogen_ws_simple <- agg_simple(cs_hydrogen_ws)
+
+agg_battery_xs_dyn     <- agg_dynamic(cs_battery_xs)
+agg_hydrogen_xs_dyn    <- agg_dynamic(cs_hydrogen_xs)
+agg_battery_ws_dyn     <- agg_dynamic(cs_battery_ws)
+agg_hydrogen_ws_dyn    <- agg_dynamic(cs_hydrogen_ws)
+```
+
+```{r plot-crosssector}
+p_xs_b <- plot_cs(agg_battery_xs_dyn,
+                  "Battery IPCEI — Cross-sector collaborations")
+p_xs_h <- plot_cs(agg_hydrogen_xs_dyn,
+                  "Hydrogen IPCEI — Cross-sector collaborations")
+p_ws_b <- plot_cs(agg_battery_ws_dyn,
+                  "Battery IPCEI — Within-sector collaborations (placebo)")
+p_ws_h <- plot_cs(agg_hydrogen_ws_dyn,
+                  "Hydrogen IPCEI — Within-sector collaborations (placebo)")
+
+print(p_xs_b); print(p_xs_h)
+print(p_ws_b); print(p_ws_h)
+
+ggsave("../results/composition/cs_battery_crosssector_eventstudy.pdf",
+       p_xs_b, width = 10, height = 6)
+ggsave("../results/composition/cs_hydrogen_crosssector_eventstudy.pdf",
+       p_xs_h, width = 10, height = 6)
+ggsave("../results/composition/cs_battery_withinsector_eventstudy.pdf",
+       p_ws_b, width = 10, height = 6)
+ggsave("../results/composition/cs_hydrogen_withinsector_eventstudy.pdf",
+       p_ws_h, width = 10, height = 6)
+```
+
+## 3.4 Non-EU & Domestic Collaborations
+
+```{r cs-noneu}
+cs_battery_non_eu  <- run_cs(battery_s2,
+                             yname = "log_collabs_non_eu",
+                             label = "Battery S2 — non-EU collaborations")
+cs_hydrogen_non_eu <- run_cs(hydrogen_s2,
+                             yname = "log_collabs_non_eu",
+                             label = "Hydrogen S2 — non-EU collaborations")
+
+agg_battery_non_eu_simple  <- agg_simple(cs_battery_non_eu)
+agg_hydrogen_non_eu_simple <- agg_simple(cs_hydrogen_non_eu)
+agg_battery_non_eu_dyn     <- agg_dynamic(cs_battery_non_eu)
+agg_hydrogen_non_eu_dyn    <- agg_dynamic(cs_hydrogen_non_eu)
+```
+
+```{r plot-noneu}
+p_non_eu_b <- plot_cs(agg_battery_non_eu_dyn,
+                      "Battery IPCEI — Non-EU collaborations")
+p_non_eu_h <- plot_cs(agg_hydrogen_non_eu_dyn,
+                      "Hydrogen IPCEI — Non-EU collaborations")
+
+print(p_non_eu_b)
+print(p_non_eu_h)
+
+ggsave("../results/composition/cs_battery_noneu_eventstudy.pdf",
+       p_non_eu_b, width = 10, height = 6)
+ggsave("../results/composition/cs_hydrogen_noneu_eventstudy.pdf",
+       p_non_eu_h, width = 10, height = 6)
+```
+
+```{r cs-domestic}
+cs_battery_domestic  <- run_cs(battery_s2,
+                                yname = "log_collabs_domestic",
+                                label = "Battery S2 — domestic EU collaborations")
+cs_hydrogen_domestic <- run_cs(hydrogen_s2,
+                                yname = "log_collabs_domestic",
+                                label = "Hydrogen S2 — domestic EU collaborations")
+
+agg_battery_domestic_simple  <- agg_simple(cs_battery_domestic)
+agg_hydrogen_domestic_simple <- agg_simple(cs_hydrogen_domestic)
+agg_battery_domestic_dyn     <- agg_dynamic(cs_battery_domestic)
+agg_hydrogen_domestic_dyn    <- agg_dynamic(cs_hydrogen_domestic)
+```
+
+
+```{r plot-domestic}
+p_domestic_b <- plot_cs(agg_battery_domestic_dyn,
+                        "Battery IPCEI — Domestic EU collaborations")
+p_domestic_h <- plot_cs(agg_hydrogen_domestic_dyn,
+                        "Hydrogen IPCEI — Domestic EU collaborations")
+print(p_domestic_b)
+print(p_domestic_h)
+ggsave("../results/composition/cs_battery_domestic_eventstudy.pdf",
+       p_domestic_b, width = 10, height = 6)
+ggsave("../results/composition/cs_hydrogen_domestic_eventstudy.pdf",
+       p_domestic_h, width = 10, height = 6)
+```
+
+---
+
+# 4. Summary Table
+
+```{r summary-table}
+att_table <- bind_rows(
+  read.csv("../results/reference_atts.csv", stringsAsFactors = FALSE),
+
+  make_att_row(
+    agg_battery_tech_simple,
+    "Battery",
+    "Technology-focused collaborations",
+    type   = "Primary S2",
+    cs_out = cs_battery_tech,
+    df     = battery_s2,
+    yname  = "log_collabs_battery"
+  ),
+
+  make_att_row(
+    agg_hydrogen_tech_simple,
+    "Hydrogen",
+    "Technology-focused collaborations",
+    type   = "Primary S2",
+    cs_out = cs_hydrogen_tech,
+    df     = hydrogen_s2,
+    yname  = "log_collabs_hydrogen"
+  ),
+
+  make_att_row(
+    agg_battery_cb_simple,
+    "Battery",
+    "Cross-border EU collaborations",
+    type   = "Primary S2",
+    cs_out = cs_battery_cb,
+    df     = battery_s2,
+    yname  = "log_collabs_eu_crossborder"
+  ),
+
+  make_att_row(
+    agg_hydrogen_cb_simple,
+    "Hydrogen",
+    "Cross-border EU collaborations",
+    type   = "Primary S2",
+    cs_out = cs_hydrogen_cb,
+    df     = hydrogen_s2,
+    yname  = "log_collabs_eu_crossborder"
+  ),
+
+  make_att_row(
+    agg_battery_xs_simple,
+    "Battery",
+    "Cross-sector collaborations",
+    type   = "Primary S2",
+    cs_out = cs_battery_xs,
+    df     = battery_s2,
+    yname  = "log_collabs_crosssector"
+  ),
+
+  make_att_row(
+    agg_hydrogen_xs_simple,
+    "Hydrogen",
+    "Cross-sector collaborations",
+    type   = "Primary S2",
+    cs_out = cs_hydrogen_xs,
+    df     = hydrogen_s2,
+    yname  = "log_collabs_crosssector"
+  ),
+
+  make_att_row(
+    agg_battery_non_eu_simple,
+    "Battery",
+    "Non-EU collaborations",
+    type   = "Placebo",
+    cs_out = cs_battery_non_eu,
+    df     = battery_s2,
+    yname  = "log_collabs_non_eu"
+  ),
+
+  make_att_row(
+    agg_hydrogen_non_eu_simple,
+    "Hydrogen",
+    "Non-EU collaborations",
+    type   = "Placebo",
+    cs_out = cs_hydrogen_non_eu,
+    df     = hydrogen_s2,
+    yname  = "log_collabs_non_eu"
+  ),
+  
+  make_att_row(
+    agg_battery_domestic_simple,  
+    "Battery",  
+    "Domestic EU collaborations", 
+    type = "Placebo",
+    cs_out = cs_battery_domestic,
+    df = battery_s2, yname = "log_collabs_domestic"
+  ),
+  
+  make_att_row(
+    agg_hydrogen_domestic_simple, 
+    "Hydrogen", 
+    "Domestic EU collaborations", 
+    type = "Placebo",
+    cs_out = cs_hydrogen_domestic,
+    df = hydrogen_s2, 
+    yname = "log_collabs_domestic"
+  ),
+
+  make_att_row(
+    agg_battery_ws_simple,
+    "Battery",
+    "Within-sector collaborations",
+    type   = "Placebo",
+    cs_out = cs_battery_ws,
+    df     = battery_s2,
+    yname  = "log_collabs_withinsector"
+  ),
+
+  make_att_row(
+    agg_hydrogen_ws_simple,
+    "Hydrogen",
+    "Within-sector collaborations",
+    type   = "Placebo",
+    cs_out = cs_hydrogen_ws,
+    df     = hydrogen_s2,
+    yname  = "log_collabs_withinsector"
+  )
+)
+
+cat("\n=== Combined ATT Summary ===\n")
+print(att_table, row.names = FALSE)
+write.csv(att_table, "../results/composition/att_combined_table.csv", row.names = FALSE)
+
+# Append/update shared ATT table
+existing <- read.csv("../results/att_summary_all.csv", stringsAsFactors = FALSE)
+
+existing_clean <- existing %>%
+  filter(!Outcome %in% c(
+    "Battery-tech collabs",
+    "Hydrogen-tech collabs",
+    "EU-internal collabs",
+    "EU collabs (EU HQ only)",
+    "Non-EU collabs",
+    "Cross-border EU collabs",
+    "Cross-sector collabs",
+    "Within-sector collabs (placebo)",
+    "Technology-focused collaborations",
+    "Cross-border EU collaborations",
+    "Cross-sector collaborations",
+    "Non-EU collaborations",
+    "Domestic EU collaborations",
+    "Within-sector collaborations"
+  ))
+
+write.csv(
+  bind_rows(existing_clean, att_table[-c(1, 2), ]),
+  "../results/att_summary_all.csv",
+  row.names = FALSE
+)
+
+kable(att_table, digits = 4,
+      caption = "Callaway & Sant'Anna ATT — Combined Channel and Spillover Outcomes (Primary Spec S2)") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE) %>%
+  pack_rows("Reference: total collaborations", 1, 2) %>%
+  pack_rows("Primary outcomes", 3, 10) %>%
+  pack_rows("Placebo outcomes", 11, 14)
+```
+
+---
+
+# 5. Outcome Diagnostics
+
+```{r power-diagnostics}
+diagnose_outcomes <- function(df, tech_label) {
+
+  outcomes <- c(
+    "n_collabs",
+    "n_collabs_battery",
+    "n_collabs_hydrogen",
+    "n_collabs_eu_crossborder",
+    "n_collabs_crosssector",
+    "n_collabs_non_eu",
+    "n_collabs_domestic",
+    "n_collabs_withinsector"
+  )
+
+  outcomes <- outcomes[outcomes %in% names(df)]
+
+  res <- lapply(outcomes, function(v) {
+    data.frame(
+      Technology = tech_label,
+      Outcome    = v,
+      Mean       = round(mean(df[[v]], na.rm = TRUE), 3),
+      SD         = round(sd(df[[v]], na.rm = TRUE), 3),
+      ZeroShare  = round(mean(df[[v]] == 0, na.rm = TRUE), 3),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  bind_rows(res)
+}
+
+battery_diag  <- diagnose_outcomes(battery_s2,  "Battery")
+hydrogen_diag <- diagnose_outcomes(hydrogen_s2, "Hydrogen")
+diag_table    <- bind_rows(battery_diag, hydrogen_diag)
+
+cat("\n=== Outcome Diagnostics (Power Interpretation) ===\n")
+print(diag_table, row.names = FALSE)
+
+kable(diag_table,
+      caption = "Outcome Distribution Diagnostics (Mean, SD, Zero Share)") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE)
+
+write.csv(diag_table,
+          "../results/composition/outcome_diagnostics.csv",
+          row.names = FALSE)
+
+# Treatment sample sizes
+
+treated_battery  <- battery_s2 %>% filter(g_period > 0) %>% pull(firm_id) %>% unique() %>% length()
+treated_hydrogen <- hydrogen_s2 %>% filter(g_period > 0) %>% pull(firm_id) %>% unique() %>% length()
+
+cat("\n=== Treated Firms ===\n")
+cat("Battery treated firms:", treated_battery, "\n")
+cat("Hydrogen treated firms:", treated_hydrogen, "\n")
+```
+
+---
+
+# 6. Combined Event Study Plots
+
+```{r combined-main-plot}
+main_levels <- c(
+  "Technology-focused collaborations",
+  "Cross-border EU collaborations",
+  "Cross-sector collaborations",
+  "Non-EU collaborations",
+  "Domestic EU collaborations"
+)
+
+battery_plot_df <- bind_rows(
+  make_plot_df(agg_battery_tech_dyn,      "Technology-focused collaborations"),
+  make_plot_df(agg_battery_cb_dyn,        "Cross-border EU collaborations"),
+  make_plot_df(agg_battery_xs_dyn,        "Cross-sector collaborations"),
+  make_plot_df(agg_battery_non_eu_dyn,    "Non-EU collaborations"),
+  make_plot_df(agg_battery_domestic_dyn,  "Domestic EU collaborations")
+) %>%
+  mutate(outcome = factor(outcome, levels = main_levels))
+
+hydrogen_plot_df <- bind_rows(
+  make_plot_df(agg_hydrogen_tech_dyn,     "Technology-focused collaborations"),
+  make_plot_df(agg_hydrogen_cb_dyn,       "Cross-border EU collaborations"),
+  make_plot_df(agg_hydrogen_xs_dyn,       "Cross-sector collaborations"),
+  make_plot_df(agg_hydrogen_non_eu_dyn,   "Non-EU collaborations"),
+  make_plot_df(agg_hydrogen_domestic_dyn, "Domestic EU collaborations")
+) %>%
+  mutate(outcome = factor(outcome, levels = main_levels))
+
+p_battery_combined  <- make_combined_plot(
+  battery_plot_df,
+  "Battery IPCEI — Combined Main Event Studies",
+  ncol = 3   # ← increase to 3 columns since now 5 panels
+)
+p_hydrogen_combined <- make_combined_plot(
+  hydrogen_plot_df,
+  "Hydrogen IPCEI — Combined Main Event Studies",
+  ncol = 3
+)
+
+print(p_battery_combined)
+print(p_hydrogen_combined)
+
+ggsave("../results/composition/cs_battery_main_combined.pdf",
+       p_battery_combined, width = 16, height = 6)
+ggsave("../results/composition/cs_hydrogen_main_combined.pdf",
+       p_hydrogen_combined, width = 16, height = 6)
+```
+
+---
+
+# 7. Power Simulation
+
+Only the most substantively central outcomes are carried forward here: **technology-focused collaborations** and **cross-border EU collaborations**. Effect-size grid stays unchanged.
+
+```{r power-function}
+run_power_sim <- function(cs_data, outcome_var, att_true,
+                          n_sims = 100, label = "") {
+  controls_df   <- cs_data[cs_data$is_control == 1, ]
+  control_names <- unique(controls_df$Linkedin_name)
+
+  real_cohorts <- cs_data %>%
+    filter(is_treated == 1) %>%
+    distinct(Linkedin_name, g_period) %>%
+    count(g_period) %>%
+    arrange(g_period)
+
+  results <- numeric(n_sims)
+
+  for (i in seq_len(n_sims)) {
+    available    <- control_names
+    treated_pool <- character(0)
+    g_vec        <- integer(0)
+
+    for (k in seq_len(nrow(real_cohorts))) {
+      n_k    <- real_cohorts$n[k]
+      cohort <- real_cohorts$g_period[k]
+      if (length(available) < n_k) break
+      sampled      <- sample(available, n_k, replace = FALSE)
+      available    <- setdiff(available, sampled)
+      treated_pool <- c(treated_pool, sampled)
+      g_vec        <- c(g_vec, rep(cohort, n_k))
+    }
+
+    g_lookup <- data.frame(Linkedin_name = treated_pool,
+                           g_sim = g_vec,
+                           stringsAsFactors = FALSE)
+
+    sim_treated <- controls_df %>%
+      filter(Linkedin_name %in% treated_pool) %>%
+      left_join(g_lookup, by = "Linkedin_name") %>%
+      mutate(post_sim     = as.integer(period >= g_sim),
+             outcome_sim  = .data[[outcome_var]] + att_true * post_sim,
+             g_period_sim = g_sim)
+
+    sim_controls <- controls_df %>%
+      filter(Linkedin_name %in% available) %>%
+      mutate(outcome_sim  = .data[[outcome_var]],
+             g_period_sim = 0L)
+
+    sim_data <- bind_rows(sim_treated, sim_controls) %>%
+      mutate(firm_id_sim = as.integer(factor(Linkedin_name)))
+
+    result <- tryCatch({
+      cs_sim <- att_gt(
+        yname         = "outcome_sim",
+        tname         = "period",
+        idname        = "firm_id_sim",
+        gname         = "g_period_sim",
+        control_group = "notyettreated",
+        bstrap        = FALSE,
+        panel         = TRUE,
+        print_details = FALSE,
+        data          = sim_data
+      )
+      agg_sim <- aggte(cs_sim, type = "simple")
+      z_stat  <- agg_sim$overall.att / agg_sim$overall.se
+      as.integer(abs(z_stat) > 1.96)
+    }, error = function(e) NA_integer_)
+
+    results[i] <- result
+  }
+
+  mean(results, na.rm = TRUE)
+}
+```
+
+```{r power-run, cache=TRUE}
+library(parallel)
+
+att_grid <- log(1 + c(0.10, 0.20, 0.30))
+
+cat("Running combined power simulations...\n")
+
+power_b_tech <- unlist(mclapply(att_grid, function(a)
+  run_power_sim(battery_s2,  "log_collabs_battery", a, 100, "B-tech"),
+  mc.cores = 4))
+
+power_h_tech <- unlist(mclapply(att_grid, function(a)
+  run_power_sim(hydrogen_s2, "log_collabs_hydrogen", a, 100, "H-tech"),
+  mc.cores = 4))
+
+power_b_cb <- unlist(mclapply(att_grid, function(a)
+  run_power_sim(battery_s2,  "log_collabs_eu_crossborder", a, 100, "B-cb"),
+  mc.cores = 4))
+
+power_h_cb <- unlist(mclapply(att_grid, function(a)
+  run_power_sim(hydrogen_s2, "log_collabs_eu_crossborder", a, 100, "H-cb"),
+  mc.cores = 4))
+
+power_combined <- data.frame(
+  att_pct     = round((exp(att_grid) - 1) * 100, 1),
+  battery_tech  = power_b_tech,
+  hydrogen_tech = power_h_tech,
+  battery_cb    = power_b_cb,
+  hydrogen_cb   = power_h_cb
+)
+
+print(power_combined)
+write.csv(power_combined,
+          "../results/composition/power_combined.csv",
+          row.names = FALSE)
+```
+```{r load results to adapt plot later}
+# Load saved tables
+power_combined <- readr::read_csv("../results/composition/power_combined.csv")
+att_table <- readr::read_csv("../results/composition/att_combined_table.csv")
+
+# Recreate ATT objects used in plot chunk
+att_b_tech <- att_table %>%
+  dplyr::filter(
+    Technology == "Battery",
+    Outcome == "Technology-focused collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+att_h_tech <- att_table %>%
+  dplyr::filter(
+    Technology == "Hydrogen",
+    Outcome == "Technology-focused collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+att_b_cb <- att_table %>%
+  dplyr::filter(
+    Technology == "Battery",
+    Outcome == "Cross-border EU collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+att_h_cb <- att_table %>%
+  dplyr::filter(
+    Technology == "Hydrogen",
+    Outcome == "Cross-border EU collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+```
+
+```{r load-results}
+library(dplyr)
+library(readr)
+
+power_combined <- readr::read_csv("../results/composition/power_combined.csv")
+att_table      <- readr::read_csv("../results/composition/att_combined_table.csv")
+
+att_b_tech <- att_table %>%
+  dplyr::filter(
+    Technology == "Battery",
+    Outcome    == "Technology-focused collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+att_h_tech <- att_table %>%
+  dplyr::filter(
+    Technology == "Hydrogen",
+    Outcome    == "Technology-focused collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+att_b_cb <- att_table %>%
+  dplyr::filter(
+    Technology == "Battery",
+    Outcome    == "Cross-border EU collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+att_h_cb <- att_table %>%
+  dplyr::filter(
+    Technology == "Hydrogen",
+    Outcome    == "Cross-border EU collaborations"
+  ) %>%
+  dplyr::pull(ATT) %>%
+  { (exp(.) - 1) * 100 }
+
+cat("Battery tech-tagged ATT (%):", round(att_b_tech, 1), "\n")
+cat("Hydrogen tech-tagged ATT (%):", round(att_h_tech, 1), "\n")
+cat("Battery cross-border EU ATT (%):", round(att_b_cb, 1), "\n")
+cat("Hydrogen cross-border EU ATT (%):", round(att_h_cb, 1), "\n")
+```
+
+```{r power-plot}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+power_long <- power_combined %>%
+  pivot_longer(-att_pct, names_to = "spec", values_to = "power") %>%
+  mutate(
+    spec = recode(spec,
+      battery_tech  = "Battery — technology-tagged collaborations",
+      hydrogen_tech = "Hydrogen — technology-tagged collaborations",
+      battery_cb    = "Battery — cross-border EU collaborations",
+      hydrogen_cb   = "Hydrogen — cross-border EU collaborations"
+    ),
+    spec = factor(spec, levels = c(
+      "Battery — technology-tagged collaborations",
+      "Hydrogen — technology-tagged collaborations",
+      "Battery — cross-border EU collaborations",
+      "Hydrogen — cross-border EU collaborations"
+    ))
+  )
+
+p_power <- ggplot(power_long,
+                  aes(att_pct, power, colour = spec, shape = spec)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0.80, linetype = "dashed",
+             colour = "grey40", linewidth = 0.8) +
+  geom_vline(xintercept = att_b_tech,
+             linetype = "longdash", colour = "#2ca02c", linewidth = 0.7) +
+  geom_vline(xintercept = att_h_tech,
+             linetype = "longdash", colour = "#1f77b4", linewidth = 0.7) +
+  geom_vline(xintercept = att_b_cb,
+             linetype = "dotdash", colour = "#98df8a", linewidth = 0.7) +
+  geom_vline(xintercept = att_h_cb,
+             linetype = "dotdash", colour = "#aec7e8", linewidth = 0.7) +
+  annotate("text", x = att_b_tech, y = 0.14,
+           label = "Battery\nTechnology-tagged", angle = 90,
+           colour = "#2ca02c", size = 2.8,
+           hjust = 0, vjust = 1.5) +
+  annotate("text", x = att_h_tech, y = 0.14,
+           label = "Hydrogen\nTechnology-tagged", angle = 90,
+           colour = "#1f77b4", size = 2.8,
+           hjust = 0, vjust = 1.5) +
+  annotate("text", x = att_b_cb, y = 0.14,
+           label = "Battery\nCross-border EU", angle = 90,
+           colour = "#98df8a", size = 2.8,
+           hjust = 0, vjust = -0.5) +
+  annotate("text", x = att_h_cb, y = 0.14,
+           label = "Hydrogen\nCross-border EU", angle = 90,
+           colour = "#aec7e8", size = 2.8,
+           hjust = 0, vjust = 1.5) +
+  annotate("text", x = min(power_long$att_pct), y = 0.83,
+           label = "Sufficient power threshold",
+           colour = "grey40", size = 3, hjust = 0) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_colour_manual(values = c(
+    "Battery — technology-tagged collaborations"  = "#2ca02c",
+    "Hydrogen — technology-tagged collaborations" = "#1f77b4",
+    "Battery — cross-border EU collaborations"    = "#98df8a",
+    "Hydrogen — cross-border EU collaborations"   = "#aec7e8"
+  )) +
+  scale_shape_manual(values = c(16, 16, 1, 1)) +
+  labs(
+    x      = "True treatment effect (% change in collaborations)",
+    y      = "Simulated power",
+    colour = NULL,
+    shape  = NULL
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+print(p_power)
+ggsave("../results/composition/power_combined_plot.pdf",
+       p_power, width = 9, height = 6)
+```
+
+---
+
+# 8. Export for Python
+
+```{r export}
+export_dynamic <- function(agg_dyn, label) {
+  data.frame(
+    e     = agg_dyn$egt,
+    att   = agg_dyn$att.egt,
+    se    = agg_dyn$se.egt,
+    cil   = agg_dyn$att.egt - 1.96 * agg_dyn$se.egt,
+    ciu   = agg_dyn$att.egt + 1.96 * agg_dyn$se.egt,
+    label = label,
+    stringsAsFactors = FALSE
+  )
+}
+
+combined_events <- bind_rows(
+  export_dynamic(agg_battery_tech_dyn,    "Battery — technology-focused collaborations"),
+  export_dynamic(agg_hydrogen_tech_dyn,   "Hydrogen — technology-focused collaborations"),
+  export_dynamic(agg_battery_cb_dyn,      "Battery — cross-border EU collaborations"),
+  export_dynamic(agg_hydrogen_cb_dyn,     "Hydrogen — cross-border EU collaborations"),
+  export_dynamic(agg_battery_xs_dyn,      "Battery — cross-sector collaborations"),
+  export_dynamic(agg_hydrogen_xs_dyn,     "Hydrogen — cross-sector collaborations"),
+  export_dynamic(agg_battery_non_eu_dyn,  "Battery — non-EU collaborations (placebo)"),
+  export_dynamic(agg_hydrogen_non_eu_dyn, "Hydrogen — non-EU collaborations (placebo)"),
+  export_dynamic(agg_battery_ws_dyn,      "Battery — within-sector collaborations (placebo)"),
+  export_dynamic(agg_hydrogen_ws_dyn,     "Hydrogen — within-sector collaborations (placebo)")
+)
+
+existing_event <- tryCatch(
+  read.csv("../results/event_study_all.csv", stringsAsFactors = FALSE),
+  error = function(e) {
+    cat("Note: event_study_all.csv not found — creating fresh.\n")
+    NULL
+  }
+)
+
+event_study_out <- if (!is.null(existing_event)) {
+  existing_clean <- existing_event %>%
+    filter(!grepl(
+      "tech collabs|technology-focused collaborations|EU-internal|cross-border|cross-sector|within-sector|non-EU|EU primary HQ|primary HQ definition",
+      label,
+      ignore.case = TRUE
+    ))
+  bind_rows(existing_clean, combined_events)
+} else {
+  combined_events
+}
+
+write.csv(event_study_out, "../results/event_study_all.csv", row.names = FALSE)
+write.csv(att_table, "../results/composition/att_combined_table.csv", row.names = FALSE)
+cat("✓ Combined results appended to shared CSV outputs\n")
+```
+
+---
+
+# 9. Robustness Checks — Significant Channel Outcomes
+
+Replicates balance specification, firm-level clustering, and never-treated
+control group for the three significant or borderline significant outcomes:
+battery technology-focused (p=0.025), hydrogen technology-focused (p=0.057),
+and hydrogen cross-border EU (p=0.007).
+
+```{r robustness-load-s1}
+battery_s1  <- load_cs(PATH_BATTERY_S1)
+hydrogen_s1 <- load_cs(PATH_HYDROGEN_S1)
+```
+
+```{r robustness-channels}
+# ── Balance specification (S1) ────────────────────────────────────────────────
+cs_battery_tech_s1   <- run_cs(battery_s1,
+                                yname = "log_collabs_battery",
+                                label = "Battery S1 — tech-focused (balance)")
+cs_hydrogen_tech_s1  <- run_cs(hydrogen_s1,
+                                yname = "log_collabs_hydrogen",
+                                label = "Hydrogen S1 — tech-focused (balance)")
+cs_battery_cb_s1       <- run_cs(battery_s1,
+                                  yname = "log_collabs_eu_crossborder",
+                                  label = "Battery S1 — cross-border EU (balance)")
+cs_hydrogen_cb_s1    <- run_cs(hydrogen_s1,
+                                yname = "log_collabs_eu_crossborder",
+                                label = "Hydrogen S1 — cross-border EU (balance)")
+cs_hydrogen_noneu_s1 <- run_cs(hydrogen_s1,
+                                yname = "log_collabs_non_eu",
+                                label = "Hydrogen S1 — non-EU (balance)")
+cs_battery_domestic_s1 <- run_cs(battery_s1,
+                                  yname = "log_collabs_domestic",
+                                  label = "Battery S1 — domestic (balance)")
+
+# ── Firm-level clustering (S2) ────────────────────────────────────────────────
+cs_battery_tech_cl   <- run_cs(battery_s2,
+                                yname       = "log_collabs_battery",
+                                label       = "Battery S2 — tech-focused (clustered)",
+                                clustervars = "firm_id")
+cs_hydrogen_tech_cl  <- run_cs(hydrogen_s2,
+                                yname       = "log_collabs_hydrogen",
+                                label       = "Hydrogen S2 — tech-focused (clustered)",
+                                clustervars = "firm_id")
+cs_hydrogen_cb_cl    <- run_cs(hydrogen_s2,
+                                yname       = "log_collabs_eu_crossborder",
+                                label       = "Hydrogen S2 — cross-border EU (clustered)",
+                                clustervars = "firm_id")
+cs_hydrogen_noneu_cl <- run_cs(hydrogen_s2,
+                                yname       = "log_collabs_non_eu",
+                                label       = "Hydrogen S2 — non-EU (clustered)",
+                                clustervars = "firm_id")
+
+# ── Never-treated only (S2) ───────────────────────────────────────────────────
+cs_battery_tech_nt   <- run_cs(battery_s2,
+                                yname         = "log_collabs_battery",
+                                label         = "Battery S2 — tech-focused (never-treated)",
+                                control_group = "nevertreated")
+cs_hydrogen_tech_nt  <- run_cs(hydrogen_s2,
+                                yname         = "log_collabs_hydrogen",
+                                label         = "Hydrogen S2 — tech-focused (never-treated)",
+                                control_group = "nevertreated")
+cs_hydrogen_cb_nt    <- run_cs(hydrogen_s2,
+                                yname         = "log_collabs_eu_crossborder",
+                                label         = "Hydrogen S2 — cross-border EU (never-treated)",
+                                control_group = "nevertreated")
+cs_hydrogen_noneu_nt <- run_cs(hydrogen_s2,
+                                yname         = "log_collabs_non_eu",
+                                label         = "Hydrogen S2 — non-EU (never-treated)",
+                                control_group = "nevertreated")
+```
+
+```{r robustness-channels-table}
+rob_channels <- bind_rows(
+  make_att_row(agg_simple(cs_battery_tech_s1),   "Battery",  
+             "Technology-focused", "Balance spec",
+             df = battery_s1, yname = "log_collabs_battery"),
+  make_att_row(agg_simple(cs_hydrogen_tech_s1),  "Hydrogen", 
+               "Technology-focused", "Balance spec",
+               df = hydrogen_s1, yname = "log_collabs_hydrogen"),
+  make_att_row(agg_simple(cs_hydrogen_cb_s1),    "Hydrogen", 
+               "Cross-border EU",    "Balance spec",
+               df = hydrogen_s1, yname = "log_collabs_eu_crossborder"),
+  make_att_row(agg_simple(cs_hydrogen_noneu_s1), "Hydrogen", 
+               "Non-EU",             "Balance spec",
+               df = hydrogen_s1, yname = "log_collabs_non_eu"),
+  make_att_row(agg_simple(cs_battery_domestic_s1), "Battery",
+               "Domestic EU collaborations", "Balance spec",
+               df = battery_s1, yname = "log_collabs_domestic"),
+  make_att_row(agg_simple(cs_battery_cb_s1),       "Battery",
+               "Cross-border EU collaborations", "Balance spec",
+               df = battery_s1, yname = "log_collabs_eu_crossborder"),
+  make_att_row(agg_simple(cs_battery_tech_cl),   "Battery",  
+               "Technology-focused", "Firm clustering",
+               df = battery_s2, yname = "log_collabs_battery"),
+  make_att_row(agg_simple(cs_hydrogen_tech_cl),  "Hydrogen", 
+               "Technology-focused", "Firm clustering",
+               df = hydrogen_s2, yname = "log_collabs_hydrogen"),
+  make_att_row(agg_simple(cs_hydrogen_cb_cl),    "Hydrogen", 
+               "Cross-border EU",    "Firm clustering",
+               df = hydrogen_s2, yname = "log_collabs_eu_crossborder"),
+  make_att_row(agg_simple(cs_hydrogen_noneu_cl), "Hydrogen", 
+               "Non-EU",             "Firm clustering",
+               df = hydrogen_s2, yname = "log_collabs_non_eu"),
+  make_att_row(agg_simple(cs_battery_tech_nt),   "Battery",  
+               "Technology-focused", "Never-treated only",
+               df = battery_s2, yname = "log_collabs_battery"),
+  make_att_row(agg_simple(cs_hydrogen_tech_nt),  "Hydrogen", 
+               "Technology-focused", "Never-treated only",
+               df = hydrogen_s2, yname = "log_collabs_hydrogen"),
+  make_att_row(agg_simple(cs_hydrogen_cb_nt),    "Hydrogen", 
+               "Cross-border EU",    "Never-treated only",
+               df = hydrogen_s2, yname = "log_collabs_eu_crossborder"),
+  make_att_row(agg_simple(cs_hydrogen_noneu_nt), "Hydrogen", 
+               "Non-EU",             "Never-treated only",
+               df = hydrogen_s2, yname = "log_collabs_non_eu")
+)
+
+cat("\n=== Robustness Checks — Significant Channel Outcomes ===\n")
+print(rob_channels, row.names = FALSE)
+
+write.csv(rob_channels,
+          "../results/composition/robustness_channels_table.csv",
+          row.names = FALSE)
+
+kable(rob_channels, digits = 4,
+      caption = "Robustness Checks — Significant Channel Outcomes") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE) %>%
+  pack_rows("Balance specification (S1)", 1, 6) %>%   # ← was 1,4
+  pack_rows("Firm-level clustering (S2)", 7, 10) %>%  # ← was 5,8
+  pack_rows("Never-treated only (S2)",   11, 14)      # ← was 9,12
+```
+
+
+```{r bh-correction}
+# ── Benjamini-Hochberg correction separately per technology ───────────────────
+battery_p <- c(0.287, 0.025, 0.005, 0.304, 0.248, 0.366)
+names(battery_p) <- c("Total collabs", "Technology-tagged", "Domestic",
+                       "Cross-border EU", "Non-EU", "Cross-sector")
+
+hydrogen_p <- c(0.178, 0.068, 0.916, 0.013, 0.031, 0.247)
+names(hydrogen_p) <- c("Total collabs", "Technology-tagged", "Domestic",
+                        "Cross-border EU", "Non-EU", "Cross-sector")
+
+bh_battery  <- p.adjust(battery_p,  method = "BH")
+bh_hydrogen <- p.adjust(hydrogen_p, method = "BH")
+
+make_bh_df <- function(tech, p_raw, p_bh) {
+  data.frame(
+    technology = tech,
+    outcome    = names(p_raw),
+    p_raw      = round(p_raw, 3),
+    p_bh       = round(p_bh,  3),
+    sig_raw    = ifelse(p_raw < 0.01, "***",
+                 ifelse(p_raw < 0.05, "**",
+                 ifelse(p_raw < 0.10, "*", ""))),
+    sig_bh     = ifelse(p_bh  < 0.01, "***",
+                 ifelse(p_bh  < 0.05, "**",
+                 ifelse(p_bh  < 0.10, "*", "")))
+  )
+}
+
+bh_df <- rbind(
+  make_bh_df("Battery",  battery_p,  bh_battery),
+  make_bh_df("Hydrogen", hydrogen_p, bh_hydrogen)
+)
+
+cat("\n=== Benjamini-Hochberg Correction (per technology) ===\n")
+print(bh_df, row.names = FALSE)
+
+write.csv(bh_df,
+          "../results/composition/bh_correction.csv",
+          row.names = FALSE)
+```
+
+
+---
+
+# 10. Rosenbaum Bounds Sensitivity Analysis
+
+Applied to significant outcomes: battery technology-focused collabs (p=0.025)
+and hydrogen cross-border EU collabs (p=0.007). Asks how strong unmeasured
+confounding would need to be to explain away the result. Gamma = 1.5 means
+treated firms could be 1.5x more likely to be selected due to unobserved
+factors, conditional on all matched covariates.
+
+Reference: Rosenbaum, P.R. (2002). Observational Studies (2nd ed.), Springer.
+Package: rbounds — Keele, L. (2010). https://cran.r-project.org/web/packages/rbounds/
+
+```{r rosenbaum-function}
+run_rosenbaum <- function(matched_firms_path, cs_panel_path,
+                           outcome_col = "n_collabs_battery",
+                           gamma_max   = 3.0,
+                           gamma_inc   = 0.1,
+                           label       = "") {
+
+  cat("\n=== Rosenbaum Bounds:", label, "===\n")
+
+  firms <- read.csv(matched_firms_path, stringsAsFactors = FALSE)
+  panel <- read.csv(cs_panel_path,      stringsAsFactors = FALSE)
+  panel$month <- as.Date(panel$month)
+
+  g_lookup <- panel %>%
+    filter(is_treated == 1) %>%
+    distinct(Linkedin_name, matched_to, g) %>%
+    rename(g_treated = g)
+
+  panel_sym <- panel %>%
+    left_join(
+      g_lookup %>% select(matched_to, g_treated),
+      by = "matched_to"
+    ) %>%
+    mutate(
+      g_use  = ifelse(is_treated == 1, g, g_treated),
+      g_date = as.Date(g_use),
+      post   = !is.na(g_date) & month >= g_date
+    ) %>%
+    filter(post) %>%
+    mutate(y = log1p(.data[[outcome_col]])) %>%
+    group_by(Linkedin_name) %>%
+    summarise(y_mean = mean(y, na.rm = TRUE), .groups = "drop")
+
+  firms <- firms %>%
+    left_join(panel_sym, by = "Linkedin_name")
+
+  treated <- firms %>%
+    filter(is_treated == 1) %>%
+    select(matched_to, Linkedin_name, y_treated = y_mean) %>%
+    rename(treated_name = Linkedin_name)
+
+  controls_agg <- firms %>%
+    filter(is_control == 1) %>%
+    group_by(matched_to) %>%
+    summarise(y_control = mean(y_mean, na.rm = TRUE), .groups = "drop")
+
+  pairs <- treated %>%
+    left_join(controls_agg, by = "matched_to") %>%
+    filter(!is.na(y_treated), !is.na(y_control))
+
+  cat(sprintf("  Valid matched pairs: %d\n", nrow(pairs)))
+  cat(sprintf("  Mean treated: %.3f | Mean control: %.3f\n",
+              mean(pairs$y_treated), mean(pairs$y_control)))
+
+  cat("\n-- Wilcoxon signed-rank sensitivity (psens) --\n")
+  ps <- psens(pairs$y_treated, pairs$y_control,
+              Gamma = gamma_max, GammaInc = gamma_inc)
+
+  cat("\n-- Hodges-Lehmann sensitivity (hlsens) --\n")
+  hl <- hlsens(pairs$y_treated, pairs$y_control,
+               Gamma = gamma_max, GammaInc = gamma_inc)
+
+  psens_df    <- as.data.frame(ps$bounds)
+  gamma_break <- psens_df$Gamma[which(psens_df$`Lower Bound` > 0.05)[1]]
+
+  cat(sprintf("\n  Lower bound p at Gamma=1: %.4f\n",
+              psens_df$`Lower Bound`[1]))
+  cat(sprintf("  Effect robust to hidden bias up to Gamma = %.1f\n",
+              ifelse(is.na(gamma_break), gamma_max, gamma_break - gamma_inc)))
+
+  invisible(list(psens = ps, hlsens = hl,
+                 gamma_break = gamma_break, pairs = pairs))
+}
+```
+
+```{r rosenbaum-run}
+# Battery — technology-focused collabs (p=0.025)
+rb_battery_tech <- run_rosenbaum(
+  PATH_BATTERY_FIRMS_S2, PATH_BATTERY_S2,
+  outcome_col = "n_collabs_battery",
+  label       = "Battery S2 — technology-focused collabs"
+)
+
+# Hydrogen — technology-focused collabs (p=0.057)
+rb_hydrogen_tech <- run_rosenbaum(
+  PATH_HYDROGEN_FIRMS_S2, PATH_HYDROGEN_S2,
+  outcome_col = "n_collabs_hydrogen",
+  label       = "Hydrogen S2 — technology-focused collabs"
+)
+
+# Hydrogen — cross-border EU collabs (p=0.007)
+rb_hydrogen_cb <- run_rosenbaum(
+  PATH_HYDROGEN_FIRMS_S2, PATH_HYDROGEN_S2,
+  outcome_col = "n_collabs_eu_crossborder",
+  label       = "Hydrogen S2 — cross-border EU collabs"
+)
+
+# Hydrogen — non-EU collabs (p=0.020)
+rb_hydrogen_noneu <- run_rosenbaum(
+  PATH_HYDROGEN_FIRMS_S2, PATH_HYDROGEN_S2,
+  outcome_col = "n_collabs_non_eu",
+  label       = "Hydrogen S2 — non-EU collabs"
+)
+```
+
+```{r rosenbaum-table}
+make_rb_table <- function(rb_obj, label) {
+  df <- as.data.frame(rb_obj$psens$bounds)
+  df$Specification <- label
+  df %>% select(Specification, everything())
+}
+
+rb_table <- bind_rows(
+  make_rb_table(rb_battery_tech,   "Battery — technology-focused collabs"),
+  make_rb_table(rb_hydrogen_tech,  "Hydrogen — technology-focused collabs"),
+  make_rb_table(rb_hydrogen_cb,    "Hydrogen — cross-border EU collabs"),
+  make_rb_table(rb_hydrogen_noneu, "Hydrogen — non-EU collabs")
+) %>%
+  filter(Gamma %in% c(1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0))
+
+kable(rb_table, digits = 3,
+      caption = "Rosenbaum Bounds Sensitivity Analysis") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE) %>%
+  add_header_above(c(" " = 2, "P-value bounds" = 2))
+
+write.csv(rb_table,
+          "../results/composition/rosenbaum_bounds_table.csv",
+          row.names = FALSE)
+```
+
+
+---
+
+# Notes
+
+- **Primary spec only (S2):** retains the same estimation setup as the separate channel and spillover files.
+- **Main reporting labels:** Technology-focused collaborations, Cross-sector collaborations, Cross-border EU collaborations, and Non-EU collaborations.
+- **Secondary checks retained:** `n_collabs_withinsector` as placebo.
+- **Power section trimmed:** effect-size grid unchanged, but simulations and plotting now focus only on technology-focused and cross-border EU collaborations.
+- **Exports:** shared ATT and event-study CSVs are cleaned before appending, so re-runs should not duplicate legacy channel/spillover labels.
+- **Estimator:** Callaway & Sant'Anna (2021), `control_group = "notyettreated"`, 999 bootstrap iterations, no covariate adjustment.
