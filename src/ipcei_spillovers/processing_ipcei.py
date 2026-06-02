@@ -117,9 +117,27 @@ def build_ipcei_firm_summary(ipcei_events: pd.DataFrame) -> pd.DataFrame:
         n_ipcei_types=("ipcei_type", lambda s: s.nunique()),
         first_ipcei_date=("ipcei_post_date", "min"),
         last_ipcei_date=("ipcei_post_date", "max"),
-        ipcei_types=("ipcei_type", lambda s: "|".join(sorted(set(s.dropna().astype(str))))),
-        ipcei_rounds=("ipcei_round", lambda s: "|".join(map(str, sorted(set(s.dropna().astype(int)))))),
+        ipcei_types=("ipcei_type", lambda s: "|".join(
+            sorted(set(s.dropna().astype(str))))),
+        ipcei_rounds=("ipcei_round", lambda s: "|".join(
+            map(str, sorted(set(s.dropna().astype(int)))))),
     )
+
+    # ── Technology-specific first treatment dates ─────────────────────────────
+    # Needed for staggered DiD when firms participate in multiple IPCEI types.
+    # first_ipcei_date is the global minimum — these are type-specific minima.
+    for tech in ["battery", "hydrogen"]:
+        tech_dates = (
+            ipcei_events[
+                ipcei_events["ipcei_type"].str.lower().str.strip() == tech
+            ]
+            .groupby(JOIN_KEY)["ipcei_post_date"]
+            .min()
+            .reset_index()
+            .rename(columns={"ipcei_post_date": f"first_{tech}_date"})
+        )
+        summ = summ.merge(tech_dates, on=JOIN_KEY, how="left")
+    # ─────────────────────────────────────────────────────────────────────────
 
     return summ.reset_index(drop=True)
 

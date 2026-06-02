@@ -87,9 +87,9 @@ def save_df(
 
     return path
 
-def save_fig(fig, *parts, dpi=300):
+def save_fig(fig, *parts, dpi=300, tight=True):
     path = results_path("figures", *parts)
     path = path.with_suffix(".pdf")
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    fig.savefig(path, dpi=dpi, bbox_inches="tight" if tight else None)
     return path

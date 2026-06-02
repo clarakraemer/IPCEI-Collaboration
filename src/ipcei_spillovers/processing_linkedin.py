@@ -621,7 +621,7 @@ def build_partnership_master_from_collaborations(
     indicators: list[str] = COLLAB_INDICATORS,
 ) -> pd.DataFrame:
     """
-    Build partnership_master by aggregating collaboration indicator columns on-the-fly
+    Build partnership_master by aggregating collaboration indicator columns
     from the collaborations table and merging into partnerships.
 
     Result: partnerships (m rows) left-joined with aggregated indicators (1 row per collaboration_id).
