@@ -70,6 +70,12 @@ class Paths:
 # Instantiate project structure
 PROJECT_ROOT = find_project_root(marker="ipcei-spillovers")
 
+# Sibling R tree. PROJECT_ROOT = Analyse/PythonProject/ipcei-spillovers, so the
+# folder containing BOTH PythonProject/ and R/ is two levels up.
+ANALYSE_DIR   = PROJECT_ROOT.parent.parent              # resolve to Analyse/
+R_DATA_DIR    = ANALYSE_DIR / "R" / "data"
+R_RESULTS_DIR = ANALYSE_DIR / "R" / "results"
+
 PATHS = Paths(
     root=PROJECT_ROOT,
     src=PROJECT_ROOT / "src",

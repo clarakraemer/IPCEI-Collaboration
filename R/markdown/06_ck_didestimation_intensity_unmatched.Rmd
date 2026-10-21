@@ -1,0 +1,65 @@
+---
+title: "IPCEI DiD --- Intensity (total collaboration), unmatched eligible pool"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(did)
+library(dplyr)
+source("_cs_helpers.R")
+set.seed(42)
+BSTRAP <- TRUE    # clustered multiplier bootstrap for the final robustness run
+```
+
+No-matching robustness for the intensity outcome (total collaboration). Treated
+firms plus all structurally eligible controls; confounding handled by C&S
+doubly-robust covariate adjustment (`xformla`). Two variants per technology:
+**DR** (with covariates) and **Raw** (no covariates, to expose selection).
+Mirrors `06_..._psm.Rmd`; outputs to `results/unmatched/intensity/`.
+
+The eligible pool is large (tens of thousands of controls), so the bootstrap is
+reduced to `BITERS` --- ample for a robustness check and keeps runtime sane.
+
+```{r paths}
+PATH_BATTERY  <- "../data/battery_unmatched_cs_ready.csv"
+PATH_HYDROGEN <- "../data/hydrogen_unmatched_cs_ready.csv"
+OUT_DIR       <- "../results/unmatched/intensity"
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+XFORMLA <- ~ log_staffCount + age + log_collab_count_2020  # same covariates as PSM
+BITERS  <- 199
+```
+
+```{r load}
+battery  <- load_cs(PATH_BATTERY)
+hydrogen <- load_cs(PATH_HYDROGEN)
+cat("battery :", n_distinct(battery$Linkedin_name), "firms\n")
+cat("hydrogen:", n_distinct(hydrogen$Linkedin_name), "firms\n")
+```
+
+```{r estimate}
+rows <- list(); es <- list()
+for (tech in c("battery", "hydrogen")) {
+  df <- if (tech == "battery") battery else hydrogen
+  for (variant in c("DR", "Raw")) {
+    xf <- if (variant == "DR") XFORMLA else NULL
+    lab <- if (variant == "DR") "Primary" else "Selection diagnostic (raw)"
+    cs <- run_cs(df, "log_collabs",
+                 label = paste("unmatched", tech, variant),
+                 xformla = xf, control_group = cg_for(tech),
+                 weightsname = NULL, biters = BITERS, bstrap = BSTRAP)
+    key <- paste(tech, variant)
+    rows[[key]] <- make_att_row_std(
+      agg_simple(cs, BSTRAP), tools::toTitleCase(tech), "Total collabs",
+      lab, cs_out = cs, df = df, yname = "log_collabs")
+    if (variant == "DR") es[[tech]] <- es_frame(cs, tools::toTitleCase(tech), "Total collabs", BSTRAP)
+  }
+}
+att <- do.call(rbind, rows)
+write.csv(att, file.path(OUT_DIR, "att_summary_intensity.csv"), row.names = FALSE)
+esdf <- do.call(rbind, es)
+if (!is.null(esdf))
+  write.csv(esdf, file.path(OUT_DIR, "event_study_intensity.csv"), row.names = FALSE)
+print(att)
+```

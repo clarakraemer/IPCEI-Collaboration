@@ -1,0 +1,1111 @@
+---
+title: "IPCEI Collaboration Analysis --- Technology-Tagged Composition Outcomes"
+subtitle: "Tech-tagged intensity, cross-border, cross-sector | Callaway & Sant'Anna DiD | monthly/quarterly toggle"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+# Slow power simulation is OFF by default so "Run All" / knit is fast. Set TRUE
+# (and run the power chunks manually) to (re)generate the power CSV + plot.
+BITERS <- 9999   # see _cs_helpers.R: 999 left borderline p-values unstable
+RUN_POWER <- FALSE
+RUN_ROSENBAUM <- FALSE   # set TRUE to (re)run Rosenbaum bounds
+RUN_CONSORTIUM <- FALSE  # consortium size dropped from the paper: neither the
+                         # zero-filled nor the active-month version is identified
+                         # (see results/DRAFT_EDITS.md, issue G). Code kept for reference.
+```
+
+# 0. Setup
+
+```{r packages}
+library(did)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(rbounds)
+
+set.seed(42)
+
+# ============================================================
+# TIME UNIT TOGGLE  --  Set to "month" or "quarter".
+# ============================================================
+TIME_UNIT <- "month"   # "month" (primary) | "quarter" (robustness)
+
+# Significance threshold for "findings" -- drives BOTH the Rosenbaum selection
+# (section 7) and the power-simulation selection (section 9), so they always
+# agree on which outcomes count.
+SIG_THRESHOLD <- 0.10  # outcomes counted as findings
+
+PATH_BATTERY_S1        <- "../data/battery_psm_spec1_cs_ready.csv"
+PATH_HYDROGEN_S1       <- "../data/hydrogen_psm_spec1_cs_ready.csv"
+PATH_BATTERY_S2        <- "../data/battery_psm_spec2_cs_ready.csv"
+PATH_HYDROGEN_S2       <- "../data/hydrogen_psm_spec2_cs_ready.csv"
+PATH_BATTERY_FIRMS_S1  <- "../data/battery_psm_spec1_matched_firms.csv"
+PATH_HYDROGEN_FIRMS_S1 <- "../data/hydrogen_psm_spec1_matched_firms.csv"
+PATH_BATTERY_FIRMS_S2  <- "../data/battery_psm_spec2_matched_firms.csv"
+PATH_HYDROGEN_FIRMS_S2 <- "../data/hydrogen_psm_spec2_matched_firms.csv"
+
+out_dir <- file.path("../results/psm/composition_techtagged", TIME_UNIT)
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+---
+
+# 1. Load & Prepare Data
+
+Two changes versus the original `load_cs()`:
+
+1. **Contiguous integer period index.** The original coded `period` as
+   `YYYY*100 + MM` (e.g. 202012, 202101). `aggte(type = "dynamic")` computes
+   event time as `e = t - g` from the *raw* `tname`/`gname` values, so across a
+   year boundary that difference is 89, not 1. The `type = "simple"`
+   aggregation that feeds the headline table is unaffected (it only needs the
+   post/pre ordering), but the dynamic event-study plots and the
+   `min_e`/`max_e` windows are distorted. Coding `period` as a dense rank
+   (1, 2, 3, ...) makes both aggregations correct regardless of `did` version.
+
+2. **Quarterly aggregation.** When `TIME_UNIT == "quarter"`, raw monthly
+   counts are summed within firm-quarter *before* the `log1p`, and `g` is
+   floored to the quarter that contains the approval date. Aggregating the
+   counts and then logging (rather than averaging monthly logs) is the
+   correct order for an additive count outcome.
+
+```{r time-helpers}
+# Floor a Date to the start of its time unit
+floor_unit <- function(d, unit = TIME_UNIT) {
+  if (unit == "month") {
+    as.Date(format(d, "%Y-%m-01"))
+  } else {  # quarter
+    q  <- (as.integer(format(d, "%m")) - 1L) %/% 3L          # 0..3
+    mm <- sprintf("%02d", q * 3L + 1L)                       # 01,04,07,10
+    as.Date(paste0(format(d, "%Y"), "-", mm, "-01"))
+  }
+}
+
+# All n_collabs* columns are outcome counts; everything else is meta/covariate
+count_cols <- function(df) grep("^n_collabs", names(df), value = TRUE)
+```
+
+```{r load-data}
+load_cs <- function(path, unit = TIME_UNIT) {
+  df <- read.csv(path, stringsAsFactors = FALSE)
+  df$month <- as.Date(df$month)
+
+  ccols <- count_cols(df)
+
+  # Covariates that are constant within firm (carried through aggregation)
+  firm_cov <- c("g", "is_treated", "is_control", "matched_to",
+                "nace1_psm", "nace1_proxy", "firm_type",
+                "log_staffCount", "age",
+                "log_collab_count_2020", "degree_centrality_2020")
+  firm_cov <- intersect(firm_cov, names(df))
+
+  # ── Collapse to the chosen time unit ───────────────────────────────────────
+  df$tunit <- floor_unit(df$month, unit)
+
+  # Level outcomes (per-month means, e.g. consortium size) are AVERAGED within
+  # firm-quarter, NOT summed like the counts. (Absent in old panels -> no-op.)
+  level_cols <- intersect(c("mean_collab_size", "mean_collab_size_active"), names(df))
+
+  if (unit == "quarter") {
+    counts <- df %>%
+      group_by(Linkedin_name, tunit) %>%
+      summarise(across(all_of(ccols), ~ sum(.x, na.rm = TRUE)),
+                .groups = "drop")
+    meta <- df %>%
+      group_by(Linkedin_name) %>%
+      summarise(across(all_of(firm_cov), ~ dplyr::first(.x)),
+                .groups = "drop")
+    levels_q <- if (length(level_cols)) df %>%
+      group_by(Linkedin_name, tunit) %>%
+      summarise(across(all_of(level_cols), ~ mean(.x, na.rm = TRUE)),  # AVERAGE, not sum
+                .groups = "drop") else NULL
+    df <- counts %>% left_join(meta, by = "Linkedin_name")
+    if (!is.null(levels_q)) df <- df %>% left_join(levels_q, by = c("Linkedin_name", "tunit"))
+  } else {
+    # monthly: tunit == month, nothing to sum, just keep one row per firm-month
+    # (.keep_all carries mean_collab_size through unchanged)
+    df <- df %>% distinct(Linkedin_name, tunit, .keep_all = TRUE)
+  }
+
+  # ── Contiguous integer period index (1..T) ─────────────────────────────────
+  u_periods   <- sort(unique(df$tunit))
+  period_idx  <- setNames(seq_along(u_periods), as.character(u_periods))
+  df$period   <- as.integer(period_idx[as.character(df$tunit)])
+
+  # ── g_period on the same contiguous scale (0 = never-treated) ───────────────
+  df$g <- as.character(df$g)
+  df$g[df$g == "" | df$g == "NA"] <- NA
+  g_unit <- floor_unit(as.Date(df$g), unit)
+  df$g_period <- period_idx[as.character(g_unit)]
+  df$g_period[is.na(df$g_period)] <- 0L
+  df$g_period <- as.numeric(df$g_period)
+
+  df$firm_id <- as.integer(factor(df$Linkedin_name))
+
+  # ── log1p every count column generically -> log_<name> ─────────────────────
+  for (cc in ccols) {
+    df[[sub("^n_collabs", "log_collabs", cc)]] <- log1p(df[[cc]])
+  }
+
+  # ── extensive-margin (binary) version of every count column ────────────────
+  for (cc in ccols) {
+    df[[sub("^n_collabs", "any_collabs", cc)]] <- as.integer(df[[cc]] > 0)
+  }
+
+  df
+}
+
+battery_s1  <- load_cs(PATH_BATTERY_S1)
+hydrogen_s1 <- load_cs(PATH_HYDROGEN_S1)
+battery_s2  <- load_cs(PATH_BATTERY_S2)
+hydrogen_s2 <- load_cs(PATH_HYDROGEN_S2)
+
+cat("TIME_UNIT =", TIME_UNIT, "\n")
+# PRIMARY specification = tighter-balance spec (spec1: battery_s1, hydrogen_s1).
+# ROBUSTNESS = larger-control-group power spec (spec2: battery_s2, hydrogen_s2).
+cat("Battery (primary, balance):",  n_distinct(battery_s1$Linkedin_name), "firms,",
+    n_distinct(battery_s1$period), "periods\n")
+cat("Hydrogen (primary, balance):", n_distinct(hydrogen_s1$Linkedin_name), "firms,",
+    n_distinct(hydrogen_s1$period), "periods\n")
+```
+
+```{r outcome-map}
+# ============================================================
+# Outcome map: which column each technology uses.
+# ============================================================
+#
+#   label                     battery column                 hydrogen column
+#   ------------------------  -----------------------------  ------------------------------
+#   technology-tagged (intens.)  log_collabs_battery         log_collabs_hydrogen
+#   cross-border EU           log_collabs_eu_crossborder_battery  ..._hydrogen
+#   cross-sector              log_collabs_crosssector_battery     ..._hydrogen
+#   cross-sector (EU only)    log_collabs_crosssector_eu_battery  ..._hydrogen   [optional]
+#   non-EU (placebo)          log_collabs_non_eu_battery          ..._hydrogen
+#   domestic (placebo)        log_collabs_domestic_battery        ..._hydrogen
+#   within-sector (placebo)   log_collabs_withinsector_battery    ..._hydrogen
+#   cross-sector (NACE-1)     log_collabs_crosssector_nace1_battery  ..._hydrogen  [robustness]
+#
+outcome_map <- list(
+  tech_focused = c(battery = "log_collabs_battery",
+                   hydrogen = "log_collabs_hydrogen"),
+  cross_border = c(battery = "log_collabs_eu_crossborder_battery",
+                   hydrogen = "log_collabs_eu_crossborder_hydrogen"),
+  cross_sector = c(battery = "log_collabs_crosssector_battery",
+                   hydrogen = "log_collabs_crosssector_hydrogen"),
+  cross_sector_eu = c(battery = "log_collabs_crosssector_eu_battery",
+                      hydrogen = "log_collabs_crosssector_eu_hydrogen"),
+  non_eu = c(battery = "log_collabs_non_eu_battery",
+             hydrogen = "log_collabs_non_eu_hydrogen"),
+  domestic = c(battery = "log_collabs_domestic_battery",
+               hydrogen = "log_collabs_domestic_hydrogen"),
+  within_sector = c(battery = "log_collabs_withinsector_battery",
+                    hydrogen = "log_collabs_withinsector_hydrogen"),
+  # Redirection benchmark: collaboration OUTSIDE the funded technology
+  # (total minus technology-tagged, built in nb03).
+  non_funded    = c(battery = "log_collabs_nonfunded_battery",
+                    hydrogen = "log_collabs_nonfunded_hydrogen"),
+  # Robustness: cross-sector at NACE-1 resolution (nace2_proxy_nace1).
+  # Same column auto-log-transformed by load_cs; primary cross_sector stays NACE-2.
+  cross_sector_nace1 = c(battery = "log_collabs_crosssector_nace1_battery",
+                         hydrogen = "log_collabs_crosssector_nace1_hydrogen")
+)
+```
+
+```{r zero-shares}
+# Zero shares among TREATED firm-periods (the binding constraint on power).
+# Watch this when you flip to quarterly: it should drop noticeably.
+zero_share_report <- function(df_b, df_h, map) {
+  rows <- lapply(names(map), function(k) {
+    cb <- sub("^log_collabs", "n_collabs", map[[k]]["battery"])
+    ch <- sub("^log_collabs", "n_collabs", map[[k]]["hydrogen"])
+    zb <- if (cb %in% names(df_b)) mean(df_b[df_b$is_treated == 1, cb] == 0) else NA
+    zh <- if (ch %in% names(df_h)) mean(df_h[df_h$is_treated == 1, ch] == 0) else NA
+    data.frame(outcome = k,
+               battery_zero_pct  = round(100 * zb, 1),
+               hydrogen_zero_pct = round(100 * zh, 1))
+  })
+  do.call(rbind, rows)
+}
+cat("\n--- Zero shares (treated firm-", TIME_UNIT, "s) ---\n", sep = "")
+print(zero_share_report(battery_s1, hydrogen_s1, outcome_map), row.names = FALSE)
+```
+
+---
+
+# 2. C&S Estimation --- Helper Functions
+
+```{r cs-function}
+run_cs <- function(df, yname, label = "",
+                   control_group = "notyettreated",
+                   clustervars   = NULL) {
+  cat("\n=== C&S:", label, "(", yname, ") ===\n")
+  if (!yname %in% names(df)) {
+    cat("  !! column", yname, "not found -- skipping\n"); return(NULL)
+  }
+  # Deterministic per-outcome seed: makes every estimate reproducible and
+  # independent of how many other outcomes ran earlier in the same session.
+  # With a single set.seed() up front, adding one outcome shifts the bootstrap
+  # stream for every later run and moves all downstream p-values.
+  set.seed(42L + sum(utf8ToInt(paste0(yname, control_group))))
+  cs_out <- att_gt(
+    yname = yname, tname = "period", idname = "firm_id", gname = "g_period",
+    control_group = control_group, clustervars = clustervars,
+    anticipation = 0,   # paper assumption: treatment date = EC approval, no anticipation
+    bstrap = TRUE, biters = BITERS, panel = TRUE, pl = TRUE, data = df
+  )
+  print(summary(cs_out))
+  cs_out
+}
+
+agg_simple  <- function(cs) if (is.null(cs)) NULL else aggte(cs, type = "simple")
+agg_dynamic <- function(cs) if (is.null(cs)) NULL else
+  aggte(cs, type = "dynamic", min_e = -12, max_e = 24)
+
+pval_from_att <- function(att, se) round(2 * pnorm(-abs(att / se)), 3)
+
+sample_stats <- function(df, yname) {
+  d <- df %>% filter(!is.na(.data[[yname]]), !is.na(firm_id),
+                     !is.na(period), !is.na(g_period))
+  data.frame(N_obs = nrow(d), N_units = n_distinct(d$firm_id),
+             N_treated = n_distinct(d$firm_id[d$g_period > 0]))
+}
+
+# Pre-trend test. Primary is did's universal Wald pre-test (cs_out$Wpval). For
+# staggered designs that bootstrap covariance is singular and att_gt returns no
+# Wald (hydrogen, confirmed -- it stays NULL under never- AND not-yet-treated).
+# In that case fall back to a joint test that the pre-period (e < 0) dynamic
+# event-study coefficients are zero: a chi-square of their t-statistics from
+# aggte(type="dynamic") att.egt/se.egt (analytic SEs, df = # pre-periods). The
+# `method` field records which test was used.
+es_pretrend <- function(cs_out) {
+  if (is.null(cs_out)) return(list(stat = NA_real_, p = NA_real_, method = NA_character_))
+  if (!is.null(cs_out$Wpval))
+    return(list(stat = round(cs_out$W, 3), p = round(cs_out$Wpval, 3), method = "Wald"))
+  dyn <- tryCatch(
+    aggte(cs_out, type = "dynamic", min_e = -12, max_e = 24, bstrap = FALSE, cband = FALSE),
+    error = function(e) NULL)
+  if (is.null(dyn)) return(list(stat = NA_real_, p = NA_real_, method = NA_character_))
+  pre <- dyn$egt < 0
+  t2  <- (dyn$att.egt[pre] / dyn$se.egt[pre])^2
+  ok  <- is.finite(t2); k <- sum(ok)
+  if (k == 0) return(list(stat = NA_real_, p = NA_real_, method = NA_character_))
+  stat <- sum(t2[ok])
+  list(stat = round(stat, 3), p = round(1 - pchisq(stat, df = k), 3), method = "ES-joint")
+}
+
+make_att_row <- function(agg_obj, technology, outcome, type = "Primary",
+                         cs_out = NULL, df = NULL, yname = NULL) {
+  if (is.null(agg_obj)) return(NULL)
+  stats <- if (!is.null(df) && !is.null(yname)) sample_stats(df, yname) else
+    data.frame(N_obs = NA, N_units = NA, N_treated = NA)
+  pt <- es_pretrend(cs_out)
+  data.frame(
+    Technology = technology, Outcome = outcome, Type = type,
+    TimeUnit   = TIME_UNIT,
+    ATT = round(agg_obj$overall.att, 4),
+    SE  = round(agg_obj$overall.se, 4),
+    p_value = pval_from_att(agg_obj$overall.att, agg_obj$overall.se),
+    pretrend_stat    = pt$stat,
+    pretrend_p_value = pt$p,
+    pretrend_test    = pt$method,
+    N_obs = stats$N_obs, N_units = stats$N_units, N_treated = stats$N_treated,
+    stringsAsFactors = FALSE
+  )
+}
+
+plot_cs <- function(agg_dyn, title) {
+  if (is.null(agg_dyn)) return(NULL)
+  ggdid(agg_dyn, title = title) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", colour = "grey40") +
+    theme_minimal(base_size = 12) +
+    labs(x = paste0(toupper(substring(TIME_UNIT, 1, 1)),
+                    substring(TIME_UNIT, 2), "s relative to treatment"),
+         y = "ATT(g,t)")
+}
+
+# Primary C&S control group: NEVER-TREATED for BOTH technologies. Some firms are
+# treated in multiple IPCEI rounds, so a not-yet-treated firm may already be
+# affected by an earlier treatment and contaminate the control pool; never-treated
+# controls avoid this and make the two technologies symmetric. (Battery is a
+# single cohort, which independently requires never-treated.) The not-yet-treated
+# alternative is reported as one robustness row for hydrogen (section 6).
+cg_for <- function(technology) "nevertreated"
+
+# Convenience: run battery + hydrogen for one outcome key from outcome_map.
+# Primary spec: never-treated controls + firm-level clustering, both technologies.
+run_pair <- function(key, label) {
+  list(
+    battery  = run_cs(battery_s1,  outcome_map[[key]]["battery"],
+                      paste("Battery S2 --", label),
+                      control_group = cg_for("battery"),
+                      clustervars   = "firm_id"),
+    hydrogen = run_cs(hydrogen_s1, outcome_map[[key]]["hydrogen"],
+                      paste("Hydrogen S2 --", label),
+                      control_group = cg_for("hydrogen"),
+                      clustervars   = "firm_id")
+  )
+}
+```
+
+---
+
+# 3. Main Outcomes (technology-tagged)
+
+```{r cs-tech}
+cs_tech <- run_pair("tech_focused", "technology-tagged intensity")
+cs_cb   <- run_pair("cross_border", "tech-tagged cross-border EU")
+cs_xs   <- run_pair("cross_sector", "tech-tagged cross-sector")
+cs_xs_n1 <- run_pair("cross_sector_nace1", "tech-tagged cross-sector (NACE-1 resolution)")
+cs_neu  <- run_pair("non_eu",       "tech-tagged non-EU (placebo)")
+cs_dom  <- run_pair("domestic",     "tech-tagged domestic (placebo)")
+cs_ws   <- run_pair("within_sector","tech-tagged within-sector (placebo)")
+cs_nf   <- run_pair("non_funded",   "collaboration outside funded technology")
+
+# Optional: cross-sector restricted to EU-EU ties. Comment out if not built.
+cs_xseu <- tryCatch(run_pair("cross_sector_eu", "tech-tagged cross-sector (EU only)"),
+                    error = function(e) list(battery = NULL, hydrogen = NULL))
+```
+
+```{r event-studies}
+es <- list(
+  battery_tech  = plot_cs(agg_dynamic(cs_tech$battery),  "Battery -- technology-tagged"),
+  hydrogen_tech = plot_cs(agg_dynamic(cs_tech$hydrogen), "Hydrogen -- technology-tagged"),
+  hydrogen_cb   = plot_cs(agg_dynamic(cs_cb$hydrogen),   "Hydrogen -- cross-border EU (tech)"),
+  hydrogen_xs   = plot_cs(agg_dynamic(cs_xs$hydrogen),   "Hydrogen -- cross-sector (tech)")
+)
+for (nm in names(es)) {
+  if (!is.null(es[[nm]])) {
+    print(es[[nm]])
+    ggsave(file.path(out_dir, paste0("es_", nm, ".pdf")),
+           es[[nm]], width = 10, height = 6)
+  }
+}
+```
+
+---
+
+# 4. Summary Table
+
+```{r summary-table}
+spec <- list(
+  list(cs_tech, "Technology-tagged collaborations", "Primary", "tech_focused"),
+  list(cs_cb,   "Cross-border EU collaborations",    "Primary", "cross_border"),
+  list(cs_xs,   "Cross-sector collaborations",       "Primary", "cross_sector"),
+  list(cs_xs_n1,"Cross-sector collaborations (NACE-1)","Robustness (NACE-1)","cross_sector_nace1"),
+  list(cs_neu,  "Non-EU collaborations",             "Placebo",    "non_eu"),
+  list(cs_dom,  "Domestic collaborations",           "Placebo",    "domestic"),
+  list(cs_ws,   "Within-sector collaborations",      "Placebo",    "within_sector"),
+  list(cs_nf,   "Non-funded collaborations",         "Benchmark",  "non_funded"),
+  list(cs_xseu, "Cross-sector EU-only collaborations","Primary","cross_sector_eu")
+)
+
+att_table <- do.call(rbind, lapply(spec, function(s) {
+  cs <- s[[1]]; outcome <- s[[2]]; type <- s[[3]]; key <- s[[4]]
+  rbind(
+    make_att_row(agg_simple(cs$battery), "Battery", outcome, type,
+                 cs$battery, battery_s1, outcome_map[[key]]["battery"]),
+    make_att_row(agg_simple(cs$hydrogen), "Hydrogen", outcome, type,
+                 cs$hydrogen, hydrogen_s1, outcome_map[[key]]["hydrogen"])
+  )
+}))
+
+cat("\n=== Tech-tagged ATT Summary (", TIME_UNIT, ") ===\n", sep = "")
+print(att_table, row.names = FALSE)
+write.csv(att_table,
+          file.path(out_dir, "att_techtagged_table.csv"), row.names = FALSE)
+```
+
+```{r export-event-studies}
+# ============================================================
+# Export tech-tagged dynamic ATT(e) in long format for notebook 08.
+# The es_*.pdf files are ggdid's default style; 08 redraws in house
+# style from THIS csv. One row per (technology, outcome, event_time).
+# ============================================================
+
+# (technology, outcome-label, cs object) for every outcome we want an ES for.
+# Labels MUST match the convention notebook 08 filters on. Adjust the label
+# strings here if 08 expects a different separator/spelling.
+es_spec <- list(
+  list("Battery",  "Technology-tagged collaborations", cs_tech$battery),
+  list("Hydrogen", "Technology-tagged collaborations", cs_tech$hydrogen),
+  list("Battery",  "Cross-border EU collaborations",   cs_cb$battery),
+  list("Hydrogen", "Cross-border EU collaborations",   cs_cb$hydrogen),
+  list("Battery",  "Cross-sector collaborations",      cs_xs$battery),
+  list("Hydrogen", "Cross-sector collaborations",      cs_xs$hydrogen),
+  list("Battery",  "Non-EU collaborations",            cs_neu$battery),
+  list("Hydrogen", "Non-EU collaborations",            cs_neu$hydrogen),
+  list("Battery",  "Domestic collaborations",          cs_dom$battery),
+  list("Hydrogen", "Domestic collaborations",          cs_dom$hydrogen),
+  list("Battery",  "Within-sector collaborations",     cs_ws$battery),
+  list("Hydrogen", "Within-sector collaborations",     cs_ws$hydrogen),
+  list("Battery",  "Non-funded collaborations",        cs_nf$battery),
+  list("Hydrogen", "Non-funded collaborations",        cs_nf$hydrogen),
+  list("Battery",  "Cross-sector EU-only collaborations", cs_xseu$battery),
+  list("Hydrogen", "Cross-sector EU-only collaborations", cs_xseu$hydrogen)
+)
+
+# Consortium-size mechanism path: compute its C&S objects HERE so the dynamic
+# event study is always exported. Section 10 (which writes consortium_size_att.csv)
+# runs AFTER this chunk, so its cs_size does not yet exist on knit -- the old
+# guard on exists("cs_size") silently dropped these rows. Estimator is IDENTICAL
+# to Section 10: cg_for() control group, no clustering, so the ES matches the ATT.
+# Event study uses the ACTIVE-month version (intensive margin), matching the
+# headline mechanism in Section 10; falls back to the zero-filled column on old
+# panels that predate 05a adding mean_collab_size_active.
+SIZE_ES_COL <- if ("mean_collab_size_active" %in% names(battery_s1))
+  "mean_collab_size_active" else "mean_collab_size"
+
+if (RUN_CONSORTIUM && "mean_collab_size" %in% names(battery_s1)) {
+  cs_size <- list(
+    battery  = run_cs(battery_s1,  SIZE_ES_COL,
+                      "Battery -- consortium size (mechanism)",
+                      control_group = cg_for("battery")),
+    hydrogen = run_cs(hydrogen_s1, SIZE_ES_COL,
+                      "Hydrogen -- consortium size (mechanism)",
+                      control_group = cg_for("hydrogen"))
+  )
+  es_spec <- c(es_spec, list(
+    list("Battery",  "Consortium size (mean firms/collab)", cs_size$battery),
+    list("Hydrogen", "Consortium size (mean firms/collab)", cs_size$hydrogen)
+  ))
+}
+
+es_to_df <- function(tech, outcome, cs_obj) {
+  if (is.null(cs_obj)) return(NULL)
+  d <- tryCatch(agg_dynamic(cs_obj), error = function(e) NULL)
+  if (is.null(d)) return(NULL)
+  # Simultaneous band: aggte() is called with cband = TRUE, so crit.val.egt is
+  # the uniform critical value over the whole event-time path. Falls back to the
+  # pointwise normal value only if the bootstrap did not return one.
+  z <- if (!is.null(d$crit.val.egt) && is.finite(d$crit.val.egt))
+    d$crit.val.egt else qnorm(0.975)
+  data.frame(
+    label      = paste(tech, "--", outcome),   # match 08's label convention
+    Technology = tech,
+    Outcome    = outcome,
+    e          = d$egt,
+    att        = d$att.egt,
+    se         = d$se.egt,
+    crit_val   = z,
+    ci_lower   = d$att.egt - z * d$se.egt,
+    ci_upper   = d$att.egt + z * d$se.egt,
+    TimeUnit   = TIME_UNIT,
+    stringsAsFactors = FALSE
+  )
+}
+
+event_study_tt <- do.call(rbind, lapply(es_spec, function(s)
+  es_to_df(s[[1]], s[[2]], s[[3]])))
+
+write.csv(event_study_tt,
+          file.path(out_dir, "event_study_techtagged.csv"), row.names = FALSE)
+cat("\nWrote event_study_techtagged.csv:", nrow(event_study_tt), "rows,",
+    length(unique(event_study_tt$label)), "outcome-technology series\n")
+print(table(event_study_tt$label))
+```
+
+---
+
+# 5. Extensive-margin robustness (binary outcome)
+
+When a tech-tagged count is mostly zeros, a `log1p` ATT is dominated by the
+zero mass and its magnitude is hard to read as an elasticity (Chen & Roth on
+logs-with-zeros). A linear-probability C&S on the binary "any such tie this
+period" outcome is an honest complement: the ATT is then a change in the
+probability of forming that type of tie. Same identification, more
+interpretable when events are rare.
+
+```{r extensive-margin}
+any_map <- lapply(outcome_map, function(v) sub("^log_collabs", "any_collabs", v))
+
+ext_keys <- c("tech_focused", "cross_border", "cross_sector")  # the ones we care about
+ext_rows <- list()
+for (key in ext_keys) {
+  cb <- run_cs(battery_s1,  any_map[[key]]["battery"],
+               paste("Battery S2 -- EXT", key),
+               control_group = cg_for("battery"))   # single cohort -> nevertreated
+  ch <- run_cs(hydrogen_s1, any_map[[key]]["hydrogen"],
+               paste("Hydrogen S2 -- EXT", key),
+               control_group = cg_for("hydrogen"))
+  ext_rows[[length(ext_rows) + 1]] <-
+    make_att_row(agg_simple(cb), "Battery", paste0("[ext] ", key), "Ext. margin",
+                 cb, battery_s1, any_map[[key]]["battery"])
+  ext_rows[[length(ext_rows) + 1]] <-
+    make_att_row(agg_simple(ch), "Hydrogen", paste0("[ext] ", key), "Ext. margin",
+                 ch, hydrogen_s1, any_map[[key]]["hydrogen"])
+}
+ext_table <- do.call(rbind, ext_rows)
+cat("\n=== Extensive-margin ATT (", TIME_UNIT, ") ===\n", sep = "")
+print(ext_table, row.names = FALSE)
+write.csv(ext_table,
+          file.path(out_dir, "att_extensive_margin.csv"), row.names = FALSE)
+```
+
+---
+
+# 6. Robustness (technology-tagged)
+
+The primary spec (section 4) is the tighter-balance matched sample (`battery_s1`
+= 1:3, `hydrogen_s1` = cal20_r2) with never-treated controls + firm-level
+clustering. Robustness reuses `run_cs()` + `outcome_map`, the contiguous period
+index and the firm-quarter aggregation (inheriting the `TIME_UNIT` toggle) and
+reports two checks: (a) **larger control group** -- the SAME never-treated +
+firm-clustered estimator re-run on the higher-ratio power matched sample
+(`battery_s2` = 1:7, `hydrogen_s2` = cal15_r3); and (b)
+**not-yet-treated controls** as one shown alternative (hydrogen only -- battery
+is a single cohort with no not-yet-treated units), so the reader sees the primary
+never-treated choice does not drive the results. The table is parallel to
+section 4.
+
+```{r robustness-techtagged}
+# Outcomes to re-run -- mirrors the section-4 spec list (the optional
+# cross_sector_eu outcome is skipped here).
+rob_spec <- list(
+  list("tech_focused",  "Technology-tagged collaborations"),
+  list("cross_border",  "Cross-border EU collaborations"),
+  list("cross_sector",  "Cross-sector collaborations"),
+  list("cross_sector_nace1", "Cross-sector collaborations (NACE-1)"),
+  list("non_eu",        "Non-EU collaborations"),
+  list("domestic",      "Domestic collaborations"),
+  list("within_sector", "Within-sector collaborations"),
+  list("non_funded",    "Non-funded collaborations")
+)
+
+# One robustness ATT row: pick the tech-tagged column from outcome_map, run C&S
+# with the requested variant, return a section-4-parallel row (NULL-safe).
+rob_one <- function(df, key, technology, outcome, variant,
+                    control_group = NULL, clustervars = NULL) {
+  # Default to the primary control group (never-treated, via cg_for). The
+  # "Not-yet-treated controls" variant passes control_group explicitly to override.
+  if (is.null(control_group)) control_group <- cg_for(technology)
+  yn <- outcome_map[[key]][tolower(technology)]
+  cs <- run_cs(df, yn,
+               label         = paste(technology, "--", outcome, "--", variant),
+               control_group = control_group,
+               clustervars   = clustervars)
+  make_att_row(agg_simple(cs), technology, outcome, variant, cs, df, yn)
+}
+
+rob_rows <- list()
+for (s in rob_spec) {
+  key <- s[[1]]; oc <- s[[2]]
+  rob_rows <- c(rob_rows, list(
+    # (a) larger control group (power spec, S2): SAME primary estimator
+    #     (never-treated + firm clustering) on the higher-ratio matched sample
+    rob_one(battery_s2,  key, "Battery",  oc, "Larger control group", clustervars = "firm_id"),
+    rob_one(hydrogen_s2, key, "Hydrogen", oc, "Larger control group", clustervars = "firm_id"),
+    # (b) not-yet-treated controls (hydrogen only; battery is a single cohort with
+    #     no not-yet-treated units) -- shows the never-treated primary choice does
+    #     not drive results
+    rob_one(hydrogen_s1, key, "Hydrogen", oc, "Not-yet-treated controls",
+            control_group = "notyettreated", clustervars = "firm_id")
+  ))
+}
+rob_table <- do.call(rbind, rob_rows)
+
+cat("\n=== Robustness checks (tech-tagged,", TIME_UNIT, ") ===\n", sep = "")
+print(rob_table, row.names = FALSE)
+write.csv(rob_table,
+          file.path(out_dir, "robustness_techtagged_table.csv"), row.names = FALSE)
+```
+
+---
+
+# 7. Rosenbaum Bounds (technology-tagged)
+
+Method preserved exactly from the original file: collapse each matched set to a
+post-treatment pair difference (treated firm vs the mean of its matched
+controls, on `log1p` of the count) and run a Wilcoxon signed-rank sensitivity
+analysis with `rbounds::psens` / `hlsens`. It reads the matched-firms and
+cs_ready CSVs directly and works off the raw `month` / `g` dates, so it is a
+matched-pair analysis unaffected by the period coding; only the tech-tagged
+**count** columns (`n_collabs_*`, not the logs) are fed in. Outputs go to the
+`TIME_UNIT` results folder.
+
+```{r rosenbaum-function}
+run_rosenbaum <- function(matched_firms_path, cs_panel_path,
+                           outcome_col = "n_collabs_battery",
+                           gamma_max   = 3.0,
+                           gamma_inc   = 0.1,
+                           label       = "") {
+
+  cat("\n=== Rosenbaum Bounds:", label, "===\n")
+
+  firms <- read.csv(matched_firms_path, stringsAsFactors = FALSE)
+  panel <- read.csv(cs_panel_path,      stringsAsFactors = FALSE)
+  panel$month <- as.Date(panel$month)
+
+  g_lookup <- panel %>%
+    filter(is_treated == 1) %>%
+    distinct(Linkedin_name, matched_to, g) %>%
+    rename(g_treated = g)
+
+  panel_sym <- panel %>%
+    left_join(
+      g_lookup %>% select(matched_to, g_treated),
+      by = "matched_to"
+    ) %>%
+    mutate(
+      g_use  = ifelse(is_treated == 1, g, g_treated),
+      g_date = as.Date(g_use),
+      post   = !is.na(g_date) & month >= g_date
+    ) %>%
+    mutate(y = log1p(.data[[outcome_col]])) %>%
+    group_by(Linkedin_name) %>%
+    # DiD contrast, not a post-treatment level: each firm's own post-minus-pre
+    # change. Pairing these changes makes the Rosenbaum null correspond to the
+    # difference-in-differences estimand rather than to a level difference.
+    summarise(y_mean = mean(y[post], na.rm = TRUE) - mean(y[!post], na.rm = TRUE),
+              .groups = "drop") %>%
+    filter(is.finite(y_mean))
+
+  firms <- firms %>%
+    left_join(panel_sym, by = "Linkedin_name")
+
+  treated <- firms %>%
+    filter(is_treated == 1) %>%
+    select(matched_to, Linkedin_name, y_treated = y_mean) %>%
+    rename(treated_name = Linkedin_name)
+
+  controls_agg <- firms %>%
+    filter(is_control == 1) %>%
+    group_by(matched_to) %>%
+    summarise(y_control = mean(y_mean, na.rm = TRUE), .groups = "drop")
+
+  pairs <- treated %>%
+    left_join(controls_agg, by = "matched_to") %>%
+    filter(!is.na(y_treated), !is.na(y_control))
+
+  cat(sprintf("  Valid matched pairs: %d\n", nrow(pairs)))
+  cat(sprintf("  Mean treated: %.3f | Mean control: %.3f\n",
+              mean(pairs$y_treated), mean(pairs$y_control)))
+
+  cat("\n-- Wilcoxon signed-rank sensitivity (psens) --\n")
+  ps <- psens(pairs$y_treated, pairs$y_control,
+              Gamma = gamma_max, GammaInc = gamma_inc)
+
+  cat("\n-- Hodges-Lehmann sensitivity (hlsens) --\n")
+  hl <- hlsens(pairs$y_treated, pairs$y_control,
+               Gamma = gamma_max, GammaInc = gamma_inc)
+
+  psens_df    <- as.data.frame(ps$bounds)
+  gamma_break <- psens_df$Gamma[which(psens_df$`Lower Bound` > 0.05)[1]]
+
+  cat(sprintf("\n  Lower bound p at Gamma=1: %.4f\n",
+              psens_df$`Lower Bound`[1]))
+  cat(sprintf("  Effect robust to hidden bias up to Gamma = %.1f\n",
+              ifelse(is.na(gamma_break), gamma_max, gamma_break - gamma_inc)))
+
+  invisible(list(psens = ps, hlsens = hl,
+                 gamma_break = gamma_break, pairs = pairs))
+}
+```
+
+```{r rosenbaum-run, eval=RUN_ROSENBAUM}
+# Dynamic selection: test exactly the outcomes that are significant in THIS run
+# (same derivation as the section-9 power sim), using the global SIG_THRESHOLD
+# from the setup chunk. key_by_outcome is defined here too (same values).
+key_by_outcome <- c(
+  "Technology-tagged collaborations"    = "tech_focused",
+  "Cross-border EU collaborations"      = "cross_border",
+  "Cross-sector collaborations"         = "cross_sector",
+  "Cross-sector EU-only collaborations" = "cross_sector_eu",
+  "Non-EU collaborations"               = "non_eu",
+  "Domestic collaborations"             = "domestic",
+  "Within-sector collaborations"        = "within_sector",
+  "Non-funded collaborations"           = "non_funded"
+)
+
+sig_rb <- att_table[!is.na(att_table$p_value) &
+                      att_table$p_value < SIG_THRESHOLD, , drop = FALSE]
+sig_rb$key <- key_by_outcome[sig_rb$Outcome]
+sig_rb <- sig_rb[!is.na(sig_rb$key), , drop = FALSE]
+
+# Feed the tech-tagged COUNT column (n_collabs_*, not the log) for each
+# significant (Technology, outcome) pair; matched-pair method unchanged.
+if (nrow(sig_rb) == 0) {
+  cat("No significant outcomes (p <", SIG_THRESHOLD,
+      ") -- Rosenbaum bounds skipped.\n")
+  rb_runs <- list()
+} else {
+  rb_runs <- lapply(seq_len(nrow(sig_rb)), function(i) {
+    tech  <- sig_rb$Technology[i]
+    is_b  <- tech == "Battery"
+    fpath <- if (is_b) PATH_BATTERY_FIRMS_S1 else PATH_HYDROGEN_FIRMS_S1
+    ppath <- if (is_b) PATH_BATTERY_S1       else PATH_HYDROGEN_S1
+    ccol  <- sub("^log_collabs", "n_collabs",
+                 outcome_map[[sig_rb$key[i]]][tolower(tech)])
+    run_rosenbaum(fpath, ppath, outcome_col = ccol,
+                  label = paste(tech, "--", sig_rb$Outcome[i]))
+  })
+  names(rb_runs) <- paste(sig_rb$Technology, "--", sig_rb$Outcome)
+}
+```
+
+```{r rosenbaum-table, eval=RUN_ROSENBAUM}
+if (length(rb_runs) == 0) {
+  cat("Rosenbaum bounds table skipped (no significant outcomes).\n")
+} else {
+  make_rb_table <- function(rb_obj, label) {
+    df <- as.data.frame(rb_obj$psens$bounds)
+    df$Specification <- label
+    df %>% select(Specification, everything())
+  }
+
+  rb_table <- bind_rows(Map(make_rb_table, rb_runs, names(rb_runs))) %>%
+    filter(Gamma %in% c(1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0))
+
+  cat("\n=== Rosenbaum bounds (tech-tagged,", TIME_UNIT, ") ===\n", sep = "")
+  print(rb_table, row.names = FALSE)
+  write.csv(rb_table,
+            file.path(out_dir, "rosenbaum_bounds_techtagged.csv"), row.names = FALSE)
+}
+```
+
+---
+
+# 8. Benjamini--Hochberg Correction (technology-tagged)
+
+BH applied **within each value chain**, across that chain's outcomes, using the
+p-values from the section-4 `att_table` (computed under the current
+`TIME_UNIT`).
+
+```{r bh-correction}
+bh_stars <- function(p) ifelse(is.na(p), "",
+                        ifelse(p < 0.01, "***",
+                        ifelse(p < 0.05, "**",
+                        ifelse(p < 0.10, "*", ""))))
+
+make_bh_df <- function(tech) {
+  sub   <- att_table[att_table$Technology == tech, ]
+  p_raw <- sub$p_value
+  p_bh  <- p.adjust(p_raw, method = "BH")
+  data.frame(
+    technology = tech,
+    outcome    = sub$Outcome,
+    p_raw      = round(p_raw, 3),
+    p_bh       = round(p_bh,  3),
+    sig_raw    = bh_stars(p_raw),
+    sig_bh     = bh_stars(p_bh),
+    stringsAsFactors = FALSE
+  )
+}
+
+bh_df <- rbind(make_bh_df("Battery"), make_bh_df("Hydrogen"))
+
+cat("\n=== Benjamini-Hochberg (per value chain,", TIME_UNIT, ") ===\n", sep = "")
+print(bh_df, row.names = FALSE)
+write.csv(bh_df,
+          file.path(out_dir, "bh_correction_techtagged.csv"), row.names = FALSE)
+```
+
+---
+
+# 9. Power Simulation (dynamic --- significant outcomes only)
+
+Design-based power simulation ported verbatim from the original file: synthetic
+treated firms are drawn from the matched controls reproducing the real cohort
+sizes, a constant additive effect is imposed on the log outcome over the
+post-period, the C&S overall ATT is re-estimated per draw, and the rejection
+rate at the 5% level is recorded. The methodology and the per-effect-size draw
+count are unchanged. The only change: it runs **only on the outcomes flagged as
+findings** in section 4 (`p_value < SIG_THRESHOLD`), mapped back to their
+`outcome_map` keys, and the combined plot shows just those, each with a
+vertical line at its estimated ATT.
+
+```{r power-function}
+run_power_sim <- function(cs_data, outcome_var, att_true,
+                          n_sims = 100, label = "") {
+  controls_df   <- cs_data[cs_data$is_control == 1, ]
+  control_names <- unique(controls_df$Linkedin_name)
+
+  real_cohorts <- cs_data %>%
+    filter(is_treated == 1) %>%
+    distinct(Linkedin_name, g_period) %>%
+    count(g_period) %>%
+    arrange(g_period)
+
+  results <- numeric(n_sims)
+
+  for (i in seq_len(n_sims)) {
+    available    <- control_names
+    treated_pool <- character(0)
+    g_vec        <- integer(0)
+
+    for (k in seq_len(nrow(real_cohorts))) {
+      n_k    <- real_cohorts$n[k]
+      cohort <- real_cohorts$g_period[k]
+      if (length(available) < n_k) break
+      sampled      <- sample(available, n_k, replace = FALSE)
+      available    <- setdiff(available, sampled)
+      treated_pool <- c(treated_pool, sampled)
+      g_vec        <- c(g_vec, rep(cohort, n_k))
+    }
+
+    g_lookup <- data.frame(Linkedin_name = treated_pool,
+                           g_sim = g_vec,
+                           stringsAsFactors = FALSE)
+
+    sim_treated <- controls_df %>%
+      filter(Linkedin_name %in% treated_pool) %>%
+      left_join(g_lookup, by = "Linkedin_name") %>%
+      mutate(post_sim     = as.integer(period >= g_sim),
+             outcome_sim  = .data[[outcome_var]] + att_true * post_sim,
+             g_period_sim = g_sim)
+
+    sim_controls <- controls_df %>%
+      filter(Linkedin_name %in% available) %>%
+      mutate(outcome_sim  = .data[[outcome_var]],
+             g_period_sim = 0L)
+
+    sim_data <- bind_rows(sim_treated, sim_controls) %>%
+      mutate(firm_id_sim = as.integer(factor(Linkedin_name)))
+
+    result <- tryCatch({
+      cs_sim <- att_gt(
+        yname         = "outcome_sim",
+        tname         = "period",
+        idname        = "firm_id_sim",
+        gname         = "g_period_sim",
+        control_group = "notyettreated",
+        anticipation  = 0,   # paper assumption: no anticipation
+        bstrap        = FALSE,
+        panel         = TRUE,
+        print_details = FALSE,
+        data          = sim_data
+      )
+      agg_sim <- aggte(cs_sim, type = "simple")
+      z_stat  <- agg_sim$overall.att / agg_sim$overall.se
+      as.integer(abs(z_stat) > 1.96)
+    }, error = function(e) NA_integer_)
+
+    results[i] <- result
+  }
+
+  mean(results, na.rm = TRUE)
+}
+```
+
+```{r power-sig-set}
+
+# Map section-4 display names back to outcome_map keys.
+# (SIG_THRESHOLD comes from the setup chunk.)
+key_by_outcome <- c(
+  "Technology-tagged collaborations"    = "tech_focused",
+  "Cross-border EU collaborations"      = "cross_border",
+  "Cross-sector collaborations"         = "cross_sector",
+  "Cross-sector EU-only collaborations" = "cross_sector_eu",
+  "Non-EU collaborations"               = "non_eu",
+  "Domestic collaborations"             = "domestic",
+  "Within-sector collaborations"        = "within_sector",
+  "Non-funded collaborations"           = "non_funded"
+)
+
+sig_rows <- att_table[!is.na(att_table$p_value) &
+                        att_table$p_value < SIG_THRESHOLD, , drop = FALSE]
+sig_rows$key <- key_by_outcome[sig_rows$Outcome]
+sig_rows <- sig_rows[!is.na(sig_rows$key), , drop = FALSE]
+
+cat("\n=== Significant outcomes (p <", SIG_THRESHOLD, ",", TIME_UNIT, ") ===\n")
+if (nrow(sig_rows) == 0) {
+  cat("  none -- power simulation will be skipped.\n")
+} else {
+  print(sig_rows[, c("Technology", "Outcome", "ATT", "p_value", "key")],
+        row.names = FALSE)
+}
+```
+
+```{r power-run, eval=RUN_POWER}
+library(parallel)
+
+# Robust parallelism: fork when available, but fall back to serial if the fork
+# workers fail (e.g. a non-interactive session), so an overnight run never
+# silently returns no results. Shadows parallel::mclapply for the calls below.
+mclapply <- function(X, FUN, ..., mc.cores = min(4L, parallel::detectCores())) {
+  res <- tryCatch(parallel::mclapply(X, FUN, ..., mc.cores = mc.cores),
+                  error = function(e) base::lapply(X, FUN))
+  if (any(vapply(res, function(z) inherits(z, "try-error"), logical(1))))
+    res <- base::lapply(X, FUN)
+  res
+}
+
+att_grid     <- log(1 + c(0.10, 0.20, 0.30))
+att_pct_grid <- round((exp(att_grid) - 1) * 100, 1)
+
+if (nrow(sig_rows) == 0) {
+  cat("No significant outcomes -- skipping power simulation.\n")
+  power_long <- NULL
+} else {
+  power_rows <- list()
+  for (i in seq_len(nrow(sig_rows))) {
+    tech  <- sig_rows$Technology[i]
+    key   <- sig_rows$key[i]
+    oc    <- sig_rows$Outcome[i]
+    dfp   <- if (tech == "Battery") battery_s1 else hydrogen_s1
+    yname <- outcome_map[[key]][tolower(tech)]
+    lbl   <- paste(tech, "--", oc)
+
+    cat("Power simulation:", lbl, "(", yname, ")\n")
+    pw <- unlist(mclapply(att_grid, function(a)
+      run_power_sim(dfp, yname, a, 100, lbl), mc.cores = 4))
+
+    power_rows[[length(power_rows) + 1]] <- data.frame(
+      spec    = lbl,
+      att_pct = att_pct_grid,
+      power   = pw,
+      stringsAsFactors = FALSE
+    )
+  }
+  power_long <- do.call(rbind, power_rows)
+  print(power_long)
+  write.csv(power_long,
+            file.path(out_dir, "power_techtagged.csv"), row.names = FALSE)
+}
+```
+
+```{r power-plot, eval=RUN_POWER}
+if (!is.null(power_long)) {
+  power_long$Technology <- sub(" --.*$", "", power_long$spec)
+  power_long$Technology <- paste(power_long$Technology, "IPCEI")
+  power_long$Outcome    <- sub("^.* -- ", "", power_long$spec)
+
+  # Annex figure defends the SIGNIFICANT results -> keep only those.
+  # (No-op if the power sim already ran on sig_rows only.)
+  sig_specs  <- paste(sig_rows$Technology, "--", sig_rows$Outcome)
+  power_long <- power_long[power_long$spec %in% sig_specs, ]
+
+  vlines <- data.frame(
+    Technology = paste(sig_rows$Technology, "IPCEI"),
+    Outcome    = sig_rows$Outcome,
+    att_at     = (exp(sig_rows$ATT) - 1) * 100,
+    stringsAsFactors = FALSE
+  )
+
+  out_lvls <- sort(unique(power_long$Outcome))
+  out_cols <- setNames(
+    c("#1b9e77","#d95f02","#7570b3","#e7298a","#66a61e","#e6ab02","#a6761d")[seq_along(out_lvls)],
+    out_lvls
+  )
+
+  p_power <- ggplot(power_long,
+                    aes(att_pct, power, colour = Outcome)) +
+    geom_hline(yintercept = 0.80, linetype = "dashed",
+               colour = "grey50", linewidth = 0.5) +
+    geom_vline(data = vlines,
+               aes(xintercept = att_at, colour = Outcome),
+               linetype = "dotted", linewidth = 0.5, show.legend = FALSE) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 1.5) +
+    facet_wrap(~ Technology) +
+    scale_colour_manual(values = out_cols) +
+    scale_y_continuous(labels = percent, limits = c(0.6, 1),
+                       breaks = seq(0.6, 1, 0.1), expand = expansion(mult = c(0, 0.02))) +
+    labs(x = "True treatment effect (% change in outcome)",
+         y = "Simulated power", colour = NULL) +
+    guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom",
+          legend.text  = element_text(size = 8),
+          panel.spacing = unit(1, "lines"),
+          strip.text   = element_text(face = "bold"))
+  print(p_power)
+  ggsave(file.path(out_dir, "power_techtagged_plot.pdf"),
+         p_power, width = 9, height = 5)
+} else {
+  cat("Power plot skipped (no significant outcomes).\n")
+}
+```
+
+---
+
+# 10. Consortium size (mechanism check)
+
+Did treated firms join LARGER multi-firm collaborations after approval? This is a
+potential mechanical driver of the composition results. `mean_collab_size` is the
+mean number of firms per collaboration a firm participates in, per period --- a
+**level**, not a count and not a share. It is run on the RAW column: no `log1p`,
+not in `outcome_map`. Technology-specific control group via `cg_for()`
+(battery `nevertreated`, hydrogen `notyettreated`); `anticipation = 0` is already
+set inside `run_cs()`. `TIME_UNIT`-aware (quarterly averages the per-month means).
+
+```{r consortium-size}
+# Two versions, see the note above:
+#   mean_collab_size_active -- NA in firm-months without a collaboration, so C&S
+#     drops them and the ATT is INTENSIVE margin. This is the headline mechanism.
+#   mean_collab_size        -- zero-filled, mixes extensive and intensive margins.
+#     Reported alongside so the difference between the two is visible.
+SIZE_COLS <- c(active = "mean_collab_size_active", allmonths = "mean_collab_size")
+SIZE_LAB  <- c(active = "Consortium size (active months)",
+               allmonths = "Consortium size (incl. zero-collaboration months)")
+
+if (RUN_CONSORTIUM && "mean_collab_size" %in% names(battery_s1)) {
+  cs_size <- list(); size_rows <- list()
+  for (v in names(SIZE_COLS)) {
+    col <- SIZE_COLS[[v]]
+    if (!(col %in% names(battery_s1))) {
+      cat("   ", col, "not in panel -- re-run 05a. Skipping.\n"); next
+    }
+    cs_size[[v]] <- list(
+      battery  = run_cs(battery_s1,  col,
+                        paste("Battery --", SIZE_LAB[[v]]),
+                        control_group = cg_for("battery")),
+      hydrogen = run_cs(hydrogen_s1, col,
+                        paste("Hydrogen --", SIZE_LAB[[v]]),
+                        control_group = cg_for("hydrogen"))
+    )
+    size_rows[[v]] <- do.call(rbind, list(
+      make_att_row(agg_simple(cs_size[[v]]$battery),  "Battery",
+                   SIZE_LAB[[v]], "Mechanism",
+                   cs_size[[v]]$battery,  battery_s1,  col),
+      make_att_row(agg_simple(cs_size[[v]]$hydrogen), "Hydrogen",
+                   SIZE_LAB[[v]], "Mechanism",
+                   cs_size[[v]]$hydrogen, hydrogen_s1, col)
+    ))
+  }
+  size_table <- do.call(rbind, size_rows)
+  # Back-compat: downstream code expects cs_size$battery / cs_size$hydrogen.
+  cs_size <- if (!is.null(cs_size$active)) cs_size$active else cs_size$allmonths
+  cat("\n=== Consortium size mechanism check (", TIME_UNIT, ") ===\n", sep = "")
+  print(size_table, row.names = FALSE)
+  write.csv(size_table,
+            file.path(out_dir, "consortium_size_att.csv"), row.names = FALSE)
+} else {
+  cat("mean_collab_size not found in cs_ready panels --",
+      "re-run notebook 05 to add it. Skipping mechanism check.\n")
+}
+```
+
+---
+
+# Notes for carrying this into your existing sections 5--10
+
+Your downstream sections need only a **column-name swap** (and they inherit the
+contiguous index + quarterly toggle for free, because they all reuse the
+data frames and `run_cs()` defined above):
+
+* **Robustness S1 / clustering / never-treated:** replace each `yname = "..."`
+  with the tech-tagged column from `outcome_map`, e.g.
+  `outcome_map$cross_border["hydrogen"]`.
+* **Power simulation:** point `outcome_var` at the tech-tagged column; the
+  zero share is higher, so expect the minimum detectable effect to rise --- this
+  is exactly the quantity to report when justifying the quarterly check.
+* **Rosenbaum bounds:** unchanged mechanics; just feed the tech-tagged count.
+* **Export for Python:** dynamic exports use the corrected event-time index now,
+  so your `08_ck_visualisation-results` event studies will be right at year
+  boundaries.

@@ -1,0 +1,58 @@
+---
+title: "IPCEI DiD --- Intensity (total collaboration), entropy balancing"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(did)
+library(dplyr)
+source("_cs_helpers.R")
+set.seed(42)
+BSTRAP <- FALSE   # analytic/agg-bootstrap SEs for a fast exploratory pass; set TRUE for final
+```
+
+Entropy-balancing robustness for the intensity outcome (total collaboration).
+Controls are reweighted so weighted covariate means match the treated means
+(weights in column `w`, passed to `att_gt` via `weightsname`). One panel per
+technology (no spec1/spec2). Mirrors `06_..._psm.Rmd`; outputs to
+`results/ebal/intensity/`.
+
+```{r paths}
+PATH_BATTERY  <- "../data/battery_ebal_cs_ready.csv"
+PATH_HYDROGEN <- "../data/hydrogen_ebal_cs_ready.csv"
+OUT_DIR       <- "../results/ebal/intensity"
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+WEIGHTS <- "w"     # entropy-balancing weights
+XFORMLA <- NULL    # balancing already conditions on covariates
+BITERS  <- 999
+```
+
+```{r load}
+battery  <- load_cs(PATH_BATTERY)
+hydrogen <- load_cs(PATH_HYDROGEN)
+cat("battery :", n_distinct(battery$Linkedin_name), "firms\n")
+cat("hydrogen:", n_distinct(hydrogen$Linkedin_name), "firms\n")
+```
+
+```{r estimate}
+rows <- list(); es <- list()
+for (tech in c("battery", "hydrogen")) {
+  df <- if (tech == "battery") battery else hydrogen
+  cs <- run_cs(df, "log_collabs",
+               label = paste("ebal", tech, "total"),
+               xformla = XFORMLA, control_group = cg_for(tech),
+               weightsname = WEIGHTS, biters = BITERS, bstrap = BSTRAP)
+  rows[[tech]] <- make_att_row_std(
+    agg_simple(cs, BSTRAP), tools::toTitleCase(tech), "Total collabs",
+    "Primary", cs_out = cs, df = df, yname = "log_collabs")
+  es[[tech]] <- es_frame(cs, tools::toTitleCase(tech), "Total collabs", BSTRAP)
+}
+att <- do.call(rbind, rows)
+write.csv(att, file.path(OUT_DIR, "att_summary_intensity.csv"), row.names = FALSE)
+esdf <- do.call(rbind, es)
+if (!is.null(esdf))
+  write.csv(esdf, file.path(OUT_DIR, "event_study_intensity.csv"), row.names = FALSE)
+print(att)
+```

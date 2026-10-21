@@ -1,0 +1,79 @@
+---
+title: "IPCEI DiD --- Technology-tagged composition, entropy balancing"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(did)
+library(dplyr)
+source("_cs_helpers.R")
+set.seed(42)
+BSTRAP <- FALSE   # analytic/agg-bootstrap SEs for a fast exploratory pass; set TRUE for final
+```
+
+Entropy-balancing robustness for the technology-tagged composition outcomes
+(and the consortium-size mechanism). Controls reweighted so weighted covariate
+means match the treated means (`weightsname = "w"`). One panel per technology.
+Mirrors `07_..._psm.Rmd`; outputs to
+`results/ebal/composition_techtagged/month/`.
+
+```{r paths}
+PATH_BATTERY  <- "../data/battery_ebal_cs_ready.csv"
+PATH_HYDROGEN <- "../data/hydrogen_ebal_cs_ready.csv"
+OUT_DIR       <- "../results/ebal/composition_techtagged/month"
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+WEIGHTS   <- "w"
+XFORMLA   <- NULL
+BITERS    <- 999
+```
+
+```{r load}
+battery  <- load_cs(PATH_BATTERY)
+hydrogen <- load_cs(PATH_HYDROGEN)
+```
+
+```{r estimate}
+rows <- list(); es <- list()
+
+for (key in names(outcome_map)) {
+  for (tech in c("battery", "hydrogen")) {
+    df    <- if (tech == "battery") battery else hydrogen
+    yname <- outcome_map[[key]][[tech]]
+    if (!(yname %in% names(df))) next
+    cs <- run_cs(df, yname, label = paste("ebal", key, tech),
+                 xformla = XFORMLA, control_group = cg_for(tech),
+                 weightsname = WEIGHTS, biters = BITERS, bstrap = BSTRAP)
+    rows[[paste(key, tech)]] <- make_att_row_std(
+      agg_simple(cs, BSTRAP), tools::toTitleCase(tech), outcome_labels[[key]],
+      outcome_type[[key]], cs_out = cs, df = df, yname = yname)
+    es[[paste(key, tech)]] <- es_frame(cs, tools::toTitleCase(tech), outcome_labels[[key]], BSTRAP)
+  }
+}
+
+# Consortium size (level outcome; no log transform)
+for (tech in c("battery", "hydrogen")) {
+  df <- if (tech == "battery") battery else hydrogen
+  if (!("mean_collab_size" %in% names(df))) next
+  cs <- run_cs(df, "mean_collab_size", label = paste("ebal consortium", tech),
+               xformla = XFORMLA, control_group = cg_for(tech),
+               weightsname = WEIGHTS, biters = BITERS, bstrap = BSTRAP)
+  rows[[paste("consortium", tech)]] <- make_att_row_std(
+    agg_simple(cs, BSTRAP), tools::toTitleCase(tech),
+    "Consortium size (mean firms/collab)", "Mechanism",
+    cs_out = cs, df = df, yname = "mean_collab_size")
+  es[[paste("consortium", tech)]] <- es_frame(
+    cs, tools::toTitleCase(tech), "Consortium size (mean firms/collab)", BSTRAP)
+}
+
+att <- do.call(rbind, rows)
+write.csv(att, file.path(OUT_DIR, "att_techtagged_table.csv"), row.names = FALSE)
+esdf <- do.call(rbind, es)
+if (!is.null(esdf))
+  write.csv(esdf, file.path(OUT_DIR, "event_study_techtagged.csv"), row.names = FALSE)
+cons <- att[att$Outcome == "Consortium size (mean firms/collab)", ]
+if (nrow(cons))
+  write.csv(cons, file.path(OUT_DIR, "consortium_size_att.csv"), row.names = FALSE)
+print(att)
+```

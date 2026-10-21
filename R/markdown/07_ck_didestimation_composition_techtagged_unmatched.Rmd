@@ -1,0 +1,82 @@
+---
+title: "IPCEI DiD --- Technology-tagged composition, unmatched eligible pool"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(did)
+library(dplyr)
+source("_cs_helpers.R")
+set.seed(42)
+BSTRAP <- TRUE    # clustered multiplier bootstrap for the final robustness run
+```
+
+No-matching robustness for the technology-tagged composition outcomes (and the
+consortium-size mechanism). Treated firms plus all structurally eligible
+controls; confounding handled by C&S doubly-robust covariate adjustment
+(`xformla`, same covariates as PSM). One panel per technology. Mirrors
+`07_..._psm.Rmd`; outputs to `results/unmatched/composition_techtagged/month/`.
+
+The eligible pool is large, so the bootstrap is reduced to `BITERS`. This script
+runs the DR variant (the fair no-matching comparison); the raw/no-covariate
+selection illustration lives in `06_..._intensity_unmatched.Rmd`.
+
+```{r paths}
+PATH_BATTERY  <- "../data/battery_unmatched_cs_ready.csv"
+PATH_HYDROGEN <- "../data/hydrogen_unmatched_cs_ready.csv"
+OUT_DIR       <- "../results/unmatched/composition_techtagged/month"
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+XFORMLA  <- ~ log_staffCount + age + log_collab_count_2020
+BITERS   <- 199
+```
+
+```{r load}
+battery  <- load_cs(PATH_BATTERY)
+hydrogen <- load_cs(PATH_HYDROGEN)
+```
+
+```{r estimate}
+rows <- list(); es <- list()
+
+for (key in names(outcome_map)) {
+  for (tech in c("battery", "hydrogen")) {
+    df    <- if (tech == "battery") battery else hydrogen
+    yname <- outcome_map[[key]][[tech]]
+    if (!(yname %in% names(df))) next
+    cs <- run_cs(df, yname, label = paste("unmatched", key, tech),
+                 xformla = XFORMLA, control_group = cg_for(tech),
+                 weightsname = NULL, biters = BITERS, bstrap = BSTRAP)
+    rows[[paste(key, tech)]] <- make_att_row_std(
+      agg_simple(cs, BSTRAP), tools::toTitleCase(tech), outcome_labels[[key]],
+      outcome_type[[key]], cs_out = cs, df = df, yname = yname)
+    es[[paste(key, tech)]] <- es_frame(cs, tools::toTitleCase(tech), outcome_labels[[key]], BSTRAP)
+  }
+}
+
+# Consortium size (level outcome; no log transform)
+for (tech in c("battery", "hydrogen")) {
+  df <- if (tech == "battery") battery else hydrogen
+  if (!("mean_collab_size" %in% names(df))) next
+  cs <- run_cs(df, "mean_collab_size", label = paste("unmatched consortium", tech),
+               xformla = XFORMLA, control_group = cg_for(tech),
+               weightsname = NULL, biters = BITERS, bstrap = BSTRAP)
+  rows[[paste("consortium", tech)]] <- make_att_row_std(
+    agg_simple(cs, BSTRAP), tools::toTitleCase(tech),
+    "Consortium size (mean firms/collab)", "Mechanism",
+    cs_out = cs, df = df, yname = "mean_collab_size")
+  es[[paste("consortium", tech)]] <- es_frame(
+    cs, tools::toTitleCase(tech), "Consortium size (mean firms/collab)", BSTRAP)
+}
+
+att <- do.call(rbind, rows)
+write.csv(att, file.path(OUT_DIR, "att_techtagged_table.csv"), row.names = FALSE)
+esdf <- do.call(rbind, es)
+if (!is.null(esdf))
+  write.csv(esdf, file.path(OUT_DIR, "event_study_techtagged.csv"), row.names = FALSE)
+cons <- att[att$Outcome == "Consortium size (mean firms/collab)", ]
+if (nrow(cons))
+  write.csv(cons, file.path(OUT_DIR, "consortium_size_att.csv"), row.names = FALSE)
+print(att)
+```

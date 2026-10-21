@@ -1,0 +1,150 @@
+---
+title: "IPCEI DiD --- sensitivity: anticipation windows and HonestDiD"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(did); library(dplyr)
+source("_cs_helpers.R")
+set.seed(42)
+```
+
+Two sensitivity analyses on the primary (PSM balance) panels, kept out of
+`07_..._psm.Rmd` so the main results files are never overwritten.
+
+1. **Anticipation windows.** The treatment date is formal Commission approval.
+   `anticipation = k` tells C&S to treat the `k` periods before `g` as already
+   treated, so identification shifts to earlier pre-periods. Battery has only
+   12 pre-treatment months (panel starts 2020-01, single cohort 2021-01), so
+   `k = 6` leaves too little pre-window and is not run for battery.
+2. **HonestDiD.** Relaxes exact parallel trends, reporting the largest violation
+   (`Mbar`, relative to the worst pre-treatment violation) under which the
+   effect remains distinguishable from zero.
+
+Outputs go to `results/psm/sensitivity/`; nothing here writes to the main
+`composition_techtagged/` or `intensity/` folders.
+
+```{r flags}
+RUN_HONESTDID <- FALSE   # dropped from the paper, see DRAFT_EDITS.md issue M
+```
+
+```{r paths}
+OUT_DIR <- "../results/psm/sensitivity"
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+PANELS <- list(Battery  = "../data/battery_psm_spec1_cs_ready.csv",
+               Hydrogen = "../data/hydrogen_psm_spec1_cs_ready.csv")
+
+# Confirmatory family only: the three outcomes the scheme's conditions target.
+OUTCOMES <- c(tech_focused = "Technology-related",
+              cross_border = "Cross-border EU",
+              cross_sector = "Cross-sector")
+
+ANTICIPATION <- c(0, 3, 6)
+MAX_ANTIC <- c(Battery = 3, Hydrogen = 6)   # battery pre-window caps at 3
+```
+
+```{r load}
+panels <- lapply(PANELS, load_cs)
+for (tech in names(panels)) {
+  df <- panels[[tech]]
+  g  <- unique(df$g_period[df$g_period > 0])
+  cat(sprintf("%-9s periods %d..%d | cohorts at %s | pre-periods before first cohort: %d\n",
+              tech, min(df$period), max(df$period),
+              paste(sort(g), collapse = ", "), min(g) - min(df$period)))
+}
+```
+
+# 1. Anticipation windows
+
+```{r anticipation}
+rows <- list()
+for (tech in names(panels)) {
+  df <- panels[[tech]]
+  for (k in ANTICIPATION) {
+    if (k > MAX_ANTIC[[tech]]) {
+      cat(sprintf("skip %s k=%d (pre-window too short)\n", tech, k)); next
+    }
+    for (key in names(OUTCOMES)) {
+      y <- outcome_map[[key]][[tolower(tech)]]
+      if (!(y %in% names(df))) next
+      cs <- run_cs(df, y, label = sprintf("%s %s anticipation=%d", tech, key, k),
+                   control_group = cg_for(tolower(tech)),
+                   anticipation = k)
+      if (is.null(cs)) next
+      r <- make_att_row_std(agg_simple(cs), tech, OUTCOMES[[key]],
+                            sprintf("anticipation=%d", k),
+                            cs_out = cs, df = df, yname = y)
+      r$anticipation <- k
+      rows[[paste(tech, key, k)]] <- r
+    }
+  }
+}
+antic <- do.call(rbind, rows)
+write.csv(antic, file.path(OUT_DIR, "att_anticipation.csv"), row.names = FALSE)
+print(antic[, c("Technology", "Outcome", "anticipation", "ATT", "SE",
+                "p_value", "pretrend_p_value", "N_treated")], row.names = FALSE)
+```
+
+# 2. HonestDiD
+
+`honest_did()` for C&S objects is distributed with HonestDiD; it takes the
+event-study aggregation and returns the robust confidence set for a given
+`Mbar`. The breakdown value is the largest `Mbar` at which the effect is still
+distinguishable from zero.
+
+```{r honestdid, eval = RUN_HONESTDID && requireNamespace("HonestDiD", quietly = TRUE)}
+library(HonestDiD)
+
+# Event-study vcov from the C&S influence function, as in the HonestDiD
+# vignette for Callaway-Sant'Anna objects: V = t(inf) %*% inf / n / n.
+# l_vec averages over the post-treatment path, so the target matches the
+# reported overall effect rather than a single event month.
+hd_rows <- list()
+for (tech in names(panels)) {
+  df <- panels[[tech]]
+  for (key in names(OUTCOMES)) {
+    y <- outcome_map[[key]][[tolower(tech)]]
+    if (!(y %in% names(df))) next
+    cs <- run_cs(df, y, label = paste(tech, key, "(HonestDiD)"),
+                 control_group = cg_for(tolower(tech)), biters = 999)
+    if (is.null(cs)) next
+    es <- tryCatch(aggte(cs, type = "dynamic", min_e = -6, max_e = 12,
+                         bstrap = TRUE, cband = TRUE),
+                   error = function(e) NULL)
+    if (is.null(es)) next
+    inf <- es$inf.function$dynamic.inf.func.e
+    n   <- nrow(inf)
+    V   <- t(inf) %*% inf / n / n
+    npre <- sum(es$egt < 0); npost <- sum(es$egt >= 0)
+    if (npre < 2 || npost < 1) { cat("   too few periods, skipping\n"); next }
+    res <- tryCatch(
+      createSensitivityResults_relativeMagnitudes(
+        betahat = es$att.egt, sigma = V,
+        numPrePeriods = npre, numPostPeriods = npost,
+        l_vec   = rep(1 / npost, npost),
+        Mbarvec = seq(0.25, 2, by = 0.25)),
+      error = function(e) { cat("   HonestDiD failed:", conditionMessage(e), "\n"); NULL })
+    if (is.null(res)) next
+    res$Technology <- tech; res$Outcome <- OUTCOMES[[key]]
+    hd_rows[[paste(tech, key)]] <- res
+  }
+}
+
+if (length(hd_rows)) {
+  hd <- do.call(rbind, hd_rows)
+  write.csv(hd, file.path(OUT_DIR, "honestdid_relative_magnitudes.csv"), row.names = FALSE)
+  print(as.data.frame(hd), row.names = FALSE)
+  # Breakdown Mbar: largest Mbar at which the robust CI still excludes zero.
+  brk <- hd %>%
+    group_by(Technology, Outcome) %>%
+    summarise(breakdown_Mbar = if (any(lb > 0 | ub < 0))
+                max(Mbar[lb > 0 | ub < 0]) else NA_real_, .groups = "drop")
+  cat("\n-- Breakdown Mbar (largest violation tolerated) --\n")
+  print(as.data.frame(brk), row.names = FALSE)
+  write.csv(brk, file.path(OUT_DIR, "honestdid_breakdown.csv"), row.names = FALSE)
+} else {
+  cat("No HonestDiD results produced.\n")
+}
+```

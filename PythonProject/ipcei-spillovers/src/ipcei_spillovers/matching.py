@@ -191,3 +191,193 @@ def propensity_score_match(
     )
 
     return matched_sample, diagnostics
+
+
+# ============================================================
+# Eligible pool (NO matching) — structural comparators only
+# ============================================================
+
+def eligible_pool(
+    data,
+    treatment_var,
+    exact_match_vars,
+    treated_any_col="treated_any",
+    exclude_other_treated=True,
+    require_vars=None,
+    n_controls=None,
+    random_state=42,
+):
+    """
+    Return treated firms + all *structurally eligible* controls, with NO
+    matching applied.
+
+    Eligibility uses only the exact-match strata the PSM design conditions on
+    (e.g. nace1_psm x has_eu_operation), so the pool is the same universe PSM
+    draws from, minus the caliper / nearest-neighbour step. Baseline
+    collaboration and centrality are deliberately NOT used to gate the pool --
+    those belong in the estimator's covariate adjustment (xformla), so the
+    unmatched design is a genuine no-matching-on-selection test.
+
+    Adds is_treated / is_control (0/1) and returns one concatenated frame.
+    """
+    df = data.copy()
+
+    treated = df[df[treatment_var] == 1].copy()
+
+    if exclude_other_treated:
+        controls = df[df[treated_any_col] == 0].copy()
+    else:
+        controls = df[df[treatment_var] == 0].copy()
+
+    # Drop rows missing the strata (and any explicitly required covariates)
+    need = list(exact_match_vars) + (list(require_vars) if require_vars else [])
+    treated = treated.dropna(subset=need)
+    controls = controls.dropna(subset=need)
+
+    # Restrict controls to strata that actually occur among treated firms
+    treated_strata = set(
+        treated[exact_match_vars].itertuples(index=False, name=None)
+    )
+    ctrl_keys = controls[exact_match_vars].itertuples(index=False, name=None)
+    mask = [k in treated_strata for k in ctrl_keys]
+    controls = controls[mask].copy()
+
+    # Optional seeded random subsample of the control pool. This is a purely
+    # computational device for a very large never-treated pool -- random, so it
+    # does NOT reintroduce selection or undermine the no-matching test. All
+    # treated units are always kept.
+    if n_controls is not None and len(controls) > n_controls:
+        controls = controls.sample(n=n_controls, random_state=random_state)
+
+    treated["is_treated"] = 1
+    treated["is_control"] = 0
+    controls["is_treated"] = 0
+    controls["is_control"] = 1
+
+    pool = pd.concat([treated, controls], axis=0, ignore_index=True)
+    return pool
+
+
+# ============================================================
+# Entropy balancing (Hainmueller 2012) — matching alternative
+# ============================================================
+
+def entropy_balance(
+    data,
+    treatment_var,
+    continuous_vars,
+    exact_match_vars,
+    treated_any_col="treated_any",
+    exclude_other_treated=True,
+    balance_variance=False,
+    max_iter=1000,
+    n_controls=None,
+    random_state=42,
+):
+    """
+    Entropy balancing as an alternative to PSM.
+
+    Builds the same eligible pool as `eligible_pool`, then solves for weights on
+    the control firms so that the *weighted* control covariate means match the
+    treated means (first moments; optionally variances too, if
+    `balance_variance`). Treated firms receive weight 1. The exact-match
+    categoricals enter as dummy moment constraints, so the reweighted controls
+    also reproduce the treated distribution across sectors / EU-operation.
+
+    Unlike PSM this keeps every treated unit (crucial with few treated) and is
+    not exposed to the King & Nielsen (2019) propensity-score matching critique.
+
+    Returns (pool, info):
+      pool : eligible-pool frame with a firm-level column ``w`` (treated = 1,
+             controls = balancing weight, mean-1 normalised within controls).
+      info : dict with convergence flag, achieved moment gap, effective control
+             sample size (Kish), max weight, and Ns. A False ``converged`` with
+             a concentrated weight (large max_weight / small eff_n_control) is
+             the overlap-failure signal: the treated moments lie outside the
+             control support and no reweighting can balance them.
+    """
+    pool = eligible_pool(
+        data,
+        treatment_var,
+        exact_match_vars,
+        treated_any_col=treated_any_col,
+        exclude_other_treated=exclude_other_treated,
+        require_vars=continuous_vars,
+        n_controls=n_controls,
+        random_state=random_state,
+    )
+
+    # Moment matrix: continuous covariates + strata dummies (+ squares).
+    dummies = pd.get_dummies(
+        pool[exact_match_vars].astype(str), drop_first=True, dtype=float
+    )
+    parts = [pool[continuous_vars].astype(float).reset_index(drop=True),
+             dummies.reset_index(drop=True)]
+    if balance_variance:
+        sq = pool[continuous_vars].astype(float) ** 2
+        sq.columns = [f"{c}__sq" for c in continuous_vars]
+        parts.append(sq.reset_index(drop=True))
+    M = pd.concat(parts, axis=1)
+
+    is_t = (pool["is_treated"].values == 1)
+    Mt = M.values[is_t]
+    Mc = M.values[~is_t]
+    target = Mt.mean(axis=0)                 # treated moment means
+    Z0 = Mc - target                         # centered control moments
+    scale = Z0.std(axis=0)
+    scale[scale == 0] = 1.0
+    Z = Z0 / scale                           # standardise for conditioning
+
+    # Hainmueller (2012) dual: minimise L(lam)=log mean exp(-Z@lam); the balance
+    # condition sum_i w_i Z_i = 0 holds at the minimum. Newton + Armijo.
+    n_c = Z.shape[0]
+
+    def _weights(lam):
+        a = -Z @ lam
+        a -= a.max()
+        w = np.exp(a)
+        return w / w.sum()
+
+    def _loss(lam):
+        a = -Z @ lam
+        c = a.max()
+        return c + np.log(np.exp(a - c).sum())
+
+    lam = np.zeros(Z.shape[1])
+    it = 0
+    for it in range(max_iter):
+        w = _weights(lam)
+        imb = (w[:, None] * Z).sum(axis=0)        # gradient of -L
+        if np.max(np.abs(imb)) < 1e-9:
+            break
+        H = (Z * w[:, None]).T @ Z - np.outer(imb, imb)   # weighted covariance
+        step = np.linalg.solve(H + 1e-12 * np.eye(Z.shape[1]), imb)
+        f0 = _loss(lam)
+        a = 1.0
+        for _ in range(60):
+            if _loss(lam + a * step) <= f0 - 1e-4 * a * (imb @ step):
+                break
+            a *= 0.5
+        lam = lam + a * step
+
+    w = _weights(lam)
+    balance_gap = float(np.max(np.abs((w[:, None] * Z).sum(axis=0))))
+    w = w * n_c                                  # mean-1 normalise within controls
+
+    pool["w"] = 1.0
+    pool.loc[~is_t, "w"] = w
+
+    achieved = (w[:, None] * Mc).sum(axis=0) / w.sum()
+    eff_n = float((w.sum() ** 2) / (w ** 2).sum())   # Kish effective sample size
+    info = {
+        "converged": balance_gap < 1e-6,
+        "iterations": int(it),
+        "balance_gap_std": balance_gap,
+        "max_abs_moment_gap": float(np.max(np.abs(achieved - target))),
+        "max_weight": float(w.max()),
+        "eff_n_control": eff_n,
+        "n_treated": int(is_t.sum()),
+        "n_control": int(n_c),
+        "moments": list(M.columns),
+    }
+    return pool, info

@@ -267,7 +267,10 @@ def style_ax(ax):
 # Time & cohort helpers (collaboration plots)
 # ============================================================
 
+# Analysis window of the paper (2020-2025): partnership_master carries a small
+# pre-2020 tail (~3% of collaborations) that the panels and figures exclude.
 PLOT_START = pd.Timestamp("2020-01-01")
+PLOT_END   = pd.Timestamp("2026-01-01")   # exclusive
 
 def pretty_type(t):
     t = str(t).lower().strip()

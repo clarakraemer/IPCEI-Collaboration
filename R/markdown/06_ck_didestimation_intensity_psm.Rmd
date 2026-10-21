@@ -17,6 +17,10 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
                       fig.width = 10, fig.height = 6)
+# Slow power simulation is OFF by default so "Run All" / knit is fast. Set TRUE
+# (and run the power chunks manually) to (re)generate the power CSV + plot.
+BITERS <- 9999   # see _cs_helpers.R: 999 left borderline p-values unstable
+RUN_POWER <- FALSE
 ```
 
 # 0. Setup
@@ -36,18 +40,22 @@ library(kableExtra)
 
 set.seed(42)
 
-PATH_BATTERY_S1  <- "../data/battery_spec1_cs_ready.csv"
-PATH_BATTERY_S2  <- "../data/battery_spec2_cs_ready.csv"
-PATH_HYDROGEN_S1 <- "../data/hydrogen_spec1_cs_ready.csv"
-PATH_HYDROGEN_S2 <- "../data/hydrogen_spec2_cs_ready.csv"
+# NOTE: intensity is MONTHLY-ONLY by design -- no TIME_UNIT toggle (unlike the
+# sibling 07_ck_didestimation_composition_techtagged.Rmd). Intentional scope
+# difference; the two files otherwise share the same estimation method.
 
-PATH_BATTERY_FIRMS_S1  <- "../data/battery_spec1_matched_firms.csv"
-PATH_BATTERY_FIRMS_S2  <- "../data/battery_spec2_matched_firms.csv"
-PATH_HYDROGEN_FIRMS_S1 <- "../data/hydrogen_spec1_matched_firms.csv"
-PATH_HYDROGEN_FIRMS_S2 <- "../data/hydrogen_spec2_matched_firms.csv"
+PATH_BATTERY_S1  <- "../data/battery_psm_spec1_cs_ready.csv"
+PATH_BATTERY_S2  <- "../data/battery_psm_spec2_cs_ready.csv"
+PATH_HYDROGEN_S1 <- "../data/hydrogen_psm_spec1_cs_ready.csv"
+PATH_HYDROGEN_S2 <- "../data/hydrogen_psm_spec2_cs_ready.csv"
+
+PATH_BATTERY_FIRMS_S1  <- "../data/battery_psm_spec1_matched_firms.csv"
+PATH_BATTERY_FIRMS_S2  <- "../data/battery_psm_spec2_matched_firms.csv"
+PATH_HYDROGEN_FIRMS_S1 <- "../data/hydrogen_psm_spec1_matched_firms.csv"
+PATH_HYDROGEN_FIRMS_S2 <- "../data/hydrogen_psm_spec2_matched_firms.csv"
 
 # Output goes to IPCEI/markdown/results_main/
-dir.create("../results/intensity", showWarnings = FALSE)
+dir.create("../results/psm/intensity", showWarnings = FALSE)
 ```
 
 ---
@@ -59,17 +67,23 @@ load_cs <- function(path) {
   df <- read.csv(path, stringsAsFactors = FALSE)
   df$month <- as.Date(df$month)
   
-  # Convert month to integer period (YYYYMM) for did package
-  df$period <- as.integer(format(df$month, "%Y")) * 100 +
-               as.integer(format(df$month, "%m"))
-  
-  # g = 0 for never-treated controls (did package convention)
-  df$g[is.na(df$g) | df$g == ""] <- NA
-  df$g_period <- ifelse(
-    is.na(df$g), 0L,
-    as.integer(format(as.Date(df$g), "%Y")) * 100 +
-    as.integer(format(as.Date(df$g), "%m"))
-  )
+  # Contiguous integer period index (1..T): dense rank of months. Replaces the
+  # old YYYY*100+MM coding, which distorts dynamic event time at year boundaries
+  # (Dec -> Jan jumps by 89). Built identically to the techtagged sibling.
+  mfloor      <- as.Date(format(df$month, "%Y-%m-01"))
+  u_periods   <- sort(unique(mfloor))
+  period_idx  <- setNames(seq_along(u_periods), as.character(u_periods))
+  df$period   <- as.integer(period_idx[as.character(mfloor)])
+
+  # g_period on the same contiguous scale (0 = never-treated). Kept NUMERIC
+  # (double), not integer: did recodes never-treated groups to Inf internally,
+  # which an integer column cannot hold (-> NA -> rows dropped -> "No valid groups").
+  df$g <- as.character(df$g)
+  df$g[df$g == "" | df$g == "NA"] <- NA
+  g_floor     <- as.Date(format(as.Date(df$g), "%Y-%m-01"))
+  df$g_period <- period_idx[as.character(g_floor)]
+  df$g_period[is.na(df$g_period)] <- 0L
+  df$g_period <- as.numeric(df$g_period)
   
   # Firm ID as integer
   df$firm_id <- as.integer(factor(df$Linkedin_name))
@@ -96,15 +110,15 @@ cat("Hydrogen Spec 2:", n_distinct(hydrogen_s2$Linkedin_name),
     "firms,", n_distinct(hydrogen_s2$period), "periods\n")
 
 # Show cohort distribution
-cat("\n--- Battery Spec 2: cohort distribution ---\n")
-battery_s2 %>%
+cat("\n--- Battery (primary): cohort distribution ---\n")
+battery_s1 %>%
   filter(is_treated == 1) %>%
   distinct(Linkedin_name, g_period) %>%
   count(g_period) %>%
   print()
 
-cat("\n--- Hydrogen Spec 2: cohort distribution ---\n")
-hydrogen_s2 %>%
+cat("\n--- Hydrogen (primary): cohort distribution ---\n")
+hydrogen_s1 %>%
   filter(is_treated == 1) %>%
   distinct(Linkedin_name, g_period) %>%
   count(g_period) %>%
@@ -116,19 +130,34 @@ hydrogen_s2 %>%
 # 2. Callaway & Sant'Anna Estimation
 
 ```{r cs-function}
-run_cs <- function(df, yname = "log_collabs", label = "", xformla = NULL, control_group = control_group, clustervars = NULL) {
+# Primary C&S control group: NEVER-TREATED for BOTH technologies (mirrors the
+# techtagged sibling). Some firms are treated in multiple IPCEI rounds, so a
+# not-yet-treated firm may already be affected by an earlier treatment and
+# contaminate the control pool; never-treated controls avoid this and make the
+# two technologies symmetric. (Battery is a single cohort, which independently
+# requires never-treated.) The not-yet-treated alternative is one robustness row
+# for hydrogen.
+cg_for <- function(technology) "nevertreated"
+
+run_cs <- function(df, yname = "log_collabs", label = "", xformla = NULL, control_group = "notyettreated", clustervars = NULL) {
   
   cat("\n=== C&S:", label, "===\n")
   
+  # Deterministic per-outcome seed: makes every estimate reproducible and
+  # independent of how many other outcomes ran earlier in the same session.
+  # With a single set.seed() up front, adding one outcome shifts the bootstrap
+  # stream for every later run and moves all downstream p-values.
+  set.seed(42L + sum(utf8ToInt(paste0(yname, control_group))))
   cs_out <- att_gt(
     yname         = yname,
     tname         = "period",
     idname        = "firm_id",
     gname         = "g_period",
-    control_group = control_group,  
+    control_group = control_group,
     clustervars   = clustervars,
+    anticipation  = 0,
     bstrap        = TRUE,
-    biters        = 999,
+    biters        = BITERS,
     panel         = TRUE,
     xformla       = xformla,
     pl            = TRUE,
@@ -143,35 +172,26 @@ run_cs <- function(df, yname = "log_collabs", label = "", xformla = NULL, contro
 ```{r cs-battery}
 # Battery: single cohort → one ATT(g,t) per post-treatment period
 
-cs_battery_s1 <- run_cs(battery_s1, label = "Battery Spec 1 (balance)", control_group = "notyettreated")
-cs_battery_s2 <- run_cs(battery_s2, label = "Battery Spec 2 (power)", control_group = "notyettreated")
+cs_battery_s1 <- run_cs(battery_s1, label = "Battery Spec 1 (balance)", control_group = cg_for("battery"), clustervars = "firm_id")
+cs_battery_s2 <- run_cs(battery_s2, label = "Battery Spec 2 (power)", control_group = cg_for("battery"), clustervars = "firm_id")
 ```
 
 ```{r cs-hydrogen}
 # Hydrogen
 
-cs_hydrogen_s1 <- run_cs(hydrogen_s1, label = "Hydrogen Spec 1 (balance)", control_group = "notyettreated")
-cs_hydrogen_s2 <- run_cs(hydrogen_s2, label = "Hydrogen Spec 2 (power)", control_group = "notyettreated")
+cs_hydrogen_s1 <- run_cs(hydrogen_s1, label = "Hydrogen Spec 1 (balance)", control_group = cg_for("hydrogen"), clustervars = "firm_id")
+cs_hydrogen_s2 <- run_cs(hydrogen_s2, label = "Hydrogen Spec 2 (power)", control_group = cg_for("hydrogen"), clustervars = "firm_id")
 ```
 
 ```{r cs-robustness}
-# Robustness A: firm-level clustering
-cs_battery_s2_clust   <- run_cs(battery_s2,  
-                                 label = "Battery S2 (clustered)",
-                                 control_group = "notyettreated",
-                                 clustervars = "firm_id")
-cs_hydrogen_s2_clust  <- run_cs(hydrogen_s2, 
-                                 label = "Hydrogen S2 (clustered)",
-                                 control_group = "notyettreated",
-                                 clustervars = "firm_id")
-
-# Robustness B: never-treated control group only
-cs_battery_s2_never   <- run_cs(battery_s2,  
-                                 label = "Battery S2 (never-treated)",
-                                 control_group = "nevertreated")
-cs_hydrogen_s2_never  <- run_cs(hydrogen_s2, 
-                                 label = "Hydrogen S2 (never-treated)",
-                                 control_group = "nevertreated")
+# Robustness: not-yet-treated controls as one shown alternative to the primary
+# never-treated choice. Hydrogen only -- battery is a single cohort with no
+# not-yet-treated units (att_gt would fail "No valid groups"). Firm clustering
+# is kept to match the primary spec.
+cs_hydrogen_notyet <- run_cs(hydrogen_s1,
+                             label = "Hydrogen (primary, not-yet-treated)",
+                             control_group = "notyettreated",
+                             clustervars = "firm_id")
 ```
 
 ```{r cs-aggregate}
@@ -182,6 +202,29 @@ agg_dynamic <- function(cs_out) aggte(cs_out, type = "dynamic",
 
 pval_from_att <- function(att, se) {
   round(2 * pnorm(-abs(att / se)), 3)
+}
+
+# Pre-trend test. Primary is did's universal Wald pre-test (cs_out$Wpval). For
+# staggered designs that bootstrap covariance is singular and att_gt returns no
+# Wald (hydrogen, confirmed -- it stays NULL under never- AND not-yet-treated).
+# In that case fall back to a joint test that the pre-period (e < 0) dynamic
+# event-study coefficients are zero: a chi-square of their t-statistics from
+# aggte(type="dynamic") att.egt/se.egt (analytic SEs, df = # pre-periods). The
+# `method` field records which test was used.
+es_pretrend <- function(cs_out) {
+  if (is.null(cs_out)) return(list(stat = NA_real_, p = NA_real_, method = NA_character_))
+  if (!is.null(cs_out$Wpval))
+    return(list(stat = round(cs_out$W, 3), p = round(cs_out$Wpval, 3), method = "Wald"))
+  dyn <- tryCatch(
+    aggte(cs_out, type = "dynamic", min_e = -12, max_e = 24, bstrap = FALSE, cband = FALSE),
+    error = function(e) NULL)
+  if (is.null(dyn)) return(list(stat = NA_real_, p = NA_real_, method = NA_character_))
+  pre <- dyn$egt < 0
+  t2  <- (dyn$att.egt[pre] / dyn$se.egt[pre])^2
+  ok  <- is.finite(t2); k <- sum(ok)
+  if (k == 0) return(list(stat = NA_real_, p = NA_real_, method = NA_character_))
+  stat <- sum(t2[ok])
+  list(stat = round(stat, 3), p = round(1 - pchisq(stat, df = k), 3), method = "ES-joint")
 }
 
 sample_stats <- function(df, yname) {
@@ -208,14 +251,16 @@ make_att_row <- function(agg_obj, label, type, cs_out = NULL, df = NULL, yname =
     data.frame(N_obs = NA_integer_, N_units = NA_integer_, N_treated = NA_integer_)
   }
 
+  pt <- es_pretrend(cs_out)
   data.frame(
     Specification    = label,
     Type             = type,
     ATT              = round(agg_obj$overall.att, 4),
     SE               = round(agg_obj$overall.se,  4),
     p_value          = pval_from_att(agg_obj$overall.att, agg_obj$overall.se),
-    pretrend_stat    = if (!is.null(cs_out) && !is.null(cs_out$W))     round(cs_out$W, 3)     else NA_real_,
-    pretrend_p_value = if (!is.null(cs_out) && !is.null(cs_out$Wpval)) round(cs_out$Wpval, 3) else NA_real_,
+    pretrend_stat    = pt$stat,
+    pretrend_p_value = pt$p,
+    pretrend_test    = pt$method,
     N_obs            = stats$N_obs,
     N_units          = stats$N_units,
     N_treated        = stats$N_treated,
@@ -231,6 +276,7 @@ make_att_row_std <- function(agg_obj, technology, outcome, type,
     data.frame(N_obs = NA_integer_, N_units = NA_integer_, N_treated = NA_integer_)
   }
 
+  pt <- es_pretrend(cs_out)
   data.frame(
     Technology       = technology,
     Outcome          = outcome,
@@ -238,8 +284,9 @@ make_att_row_std <- function(agg_obj, technology, outcome, type,
     ATT              = round(agg_obj$overall.att, 4),
     SE               = round(agg_obj$overall.se,  4),
     p_value          = pval_from_att(agg_obj$overall.att, agg_obj$overall.se),
-    pretrend_stat    = if (!is.null(cs_out) && !is.null(cs_out$W))     round(cs_out$W, 3)     else NA_real_,
-    pretrend_p_value = if (!is.null(cs_out) && !is.null(cs_out$Wpval)) round(cs_out$Wpval, 3) else NA_real_,
+    pretrend_stat    = pt$stat,
+    pretrend_p_value = pt$p,
+    pretrend_test    = pt$method,
     N_obs            = stats$N_obs,
     N_units          = stats$N_units,
     N_treated        = stats$N_treated,
@@ -259,73 +306,31 @@ agg_battery_s2_dyn  <- agg_dynamic(cs_battery_s2)
 agg_hydrogen_s1_dyn <- agg_dynamic(cs_hydrogen_s1)
 agg_hydrogen_s2_dyn <- agg_dynamic(cs_hydrogen_s2)
 
-# ── Robustness checks: simple ATT ────────────────────────────────────────────
-agg_battery_s2_clust_simple  <- agg_simple(cs_battery_s2_clust)
-agg_hydrogen_s2_clust_simple <- agg_simple(cs_hydrogen_s2_clust)
-agg_battery_s2_never_simple  <- agg_simple(cs_battery_s2_never)
-agg_hydrogen_s2_never_simple <- agg_simple(cs_hydrogen_s2_never)
-
-# ── Robustness checks: dynamic (event study) ─────────────────────────────────
-agg_battery_s2_clust_dyn  <- agg_dynamic(cs_battery_s2_clust)
-agg_hydrogen_s2_clust_dyn <- agg_dynamic(cs_hydrogen_s2_clust)
-agg_battery_s2_never_dyn  <- agg_dynamic(cs_battery_s2_never)
-agg_hydrogen_s2_never_dyn <- agg_dynamic(cs_hydrogen_s2_never)
+# ── Robustness check: simple ATT (not-yet-treated controls, hydrogen only) ────
+agg_hydrogen_notyet_simple <- agg_simple(cs_hydrogen_notyet)
 
 # ── ATT summary table (Specification schema — for main Rmd display) ──────────
 att_table <- bind_rows(
-  make_att_row(agg_hydrogen_s2_simple, "Hydrogen S2", "Primary",
-               cs_out = cs_hydrogen_s2, df = hydrogen_s2, yname = "log_collabs"),
-  make_att_row(agg_battery_s2_simple,  "Battery S2",  "Primary",
-               cs_out = cs_battery_s2,  df = battery_s2,  yname = "log_collabs"),
-  make_att_row(agg_hydrogen_s1_simple, "Hydrogen S1", "Balance robustness",
+  make_att_row(agg_hydrogen_s1_simple, "Hydrogen", "Primary",
                cs_out = cs_hydrogen_s1, df = hydrogen_s1, yname = "log_collabs"),
-  make_att_row(agg_battery_s1_simple,  "Battery S1",  "Balance robustness",
+  make_att_row(agg_battery_s1_simple,  "Battery",  "Primary",
                cs_out = cs_battery_s1,  df = battery_s1,  yname = "log_collabs"),
-  make_att_row(agg_hydrogen_s2_clust_simple, "Hydrogen S2", "Firm clustering",
-               cs_out = cs_hydrogen_s2_clust, df = hydrogen_s2, yname = "log_collabs"),
-  make_att_row(agg_battery_s2_clust_simple,  "Battery S2",  "Firm clustering",
-               cs_out = cs_battery_s2_clust,  df = battery_s2,  yname = "log_collabs"),
-  make_att_row(agg_hydrogen_s2_never_simple, "Hydrogen S2", "Never-treated only",
-               cs_out = cs_hydrogen_s2_never, df = hydrogen_s2, yname = "log_collabs"),
-  make_att_row(agg_battery_s2_never_simple,  "Battery S2",  "Never-treated only",
-               cs_out = cs_battery_s2_never,  df = battery_s2,  yname = "log_collabs")
+  make_att_row(agg_hydrogen_s2_simple, "Hydrogen", "Larger control group",
+               cs_out = cs_hydrogen_s2, df = hydrogen_s2, yname = "log_collabs"),
+  make_att_row(agg_battery_s2_simple,  "Battery",  "Larger control group",
+               cs_out = cs_battery_s2,  df = battery_s2,  yname = "log_collabs"),
+  make_att_row(agg_hydrogen_notyet_simple, "Hydrogen", "Not-yet-treated controls",
+               cs_out = cs_hydrogen_notyet, df = hydrogen_s1, yname = "log_collabs")
 )
 
 cat("\n=== Overall ATT Summary ===\n")
 print(att_table, row.names = FALSE)
-write.csv(att_table, "../results/intensity/att_summary_table.csv", row.names = FALSE)
+write.csv(att_table, "../results/psm/intensity/att_summary_table.csv", row.names = FALSE)
 
-# ── Reference ATTs for downstream Rmds ───────────────────────────────────────
-reference_atts <- bind_rows(
-  make_att_row_std(agg_battery_s2_simple,  "Battery",  "Total collabs", "Reference",
-                   cs_out = cs_battery_s2,  df = battery_s2,  yname = "log_collabs"),
-  make_att_row_std(agg_hydrogen_s2_simple, "Hydrogen", "Total collabs", "Reference",
-                   cs_out = cs_hydrogen_s2, df = hydrogen_s2, yname = "log_collabs")
-)
-
-write.csv(reference_atts, "../results/reference_atts.csv", row.names = FALSE)
-
-# ── att_summary_all.csv — Technology schema for Python plotting ──────────────
-main_atts <- bind_rows(
-  make_att_row_std(agg_hydrogen_s2_simple,       "Hydrogen", "Total collabs", "Primary",
-                   cs_out = cs_hydrogen_s2,       df = hydrogen_s2, yname = "log_collabs"),
-  make_att_row_std(agg_battery_s2_simple,        "Battery",  "Total collabs", "Primary",
-                   cs_out = cs_battery_s2,        df = battery_s2,  yname = "log_collabs"),
-  make_att_row_std(agg_hydrogen_s1_simple,       "Hydrogen", "Total collabs", "Balance robustness",
-                   cs_out = cs_hydrogen_s1,       df = hydrogen_s1, yname = "log_collabs"),
-  make_att_row_std(agg_battery_s1_simple,        "Battery",  "Total collabs", "Balance robustness",
-                   cs_out = cs_battery_s1,        df = battery_s1,  yname = "log_collabs"),
-  make_att_row_std(agg_hydrogen_s2_clust_simple, "Hydrogen", "Total collabs", "Firm clustering",
-                   cs_out = cs_hydrogen_s2_clust, df = hydrogen_s2, yname = "log_collabs"),
-  make_att_row_std(agg_battery_s2_clust_simple,  "Battery",  "Total collabs", "Firm clustering",
-                   cs_out = cs_battery_s2_clust,  df = battery_s2,  yname = "log_collabs"),
-  make_att_row_std(agg_hydrogen_s2_never_simple, "Hydrogen", "Total collabs", "Never-treated only",
-                   cs_out = cs_hydrogen_s2_never, df = hydrogen_s2, yname = "log_collabs"),
-  make_att_row_std(agg_battery_s2_never_simple,  "Battery",  "Total collabs", "Never-treated only",
-                   cs_out = cs_battery_s2_never,  df = battery_s2,  yname = "log_collabs")
-)
-
-write.csv(main_atts, "../results/att_summary_all.csv", row.names = FALSE)
+# Intensity results live in the per-folder exports this file owns:
+# results/intensity/att_summary_table.csv (above) and att_summary_intensity.csv
+# (section 5). The stray root-level reference_atts.csv / att_summary_all.csv
+# exports were removed -- no shared read-modify-write table across rmds.
 ```
 
 ```{r cs-plots}
@@ -344,10 +349,10 @@ p4 <- plot_cs(agg_hydrogen_s2_dyn, "Hydrogen IPCEI — Event Study (Spec 2: powe
 
 print(p1); print(p2); print(p3); print(p4)
 
-ggsave("../results/intensity/cs_battery_s1_eventstudy.pdf",  p1, width = 10, height = 6)
-ggsave("../results/intensity/cs_battery_s2_eventstudy.pdf",  p2, width = 10, height = 6)
-ggsave("../results/intensity/cs_hydrogen_s1_eventstudy.pdf", p3, width = 10, height = 6)
-ggsave("../results/intensity/cs_hydrogen_s2_eventstudy.pdf", p4, width = 10, height = 6)
+ggsave("../results/psm/intensity/cs_battery_s1_eventstudy.pdf",  p1, width = 10, height = 6)
+ggsave("../results/psm/intensity/cs_battery_s2_eventstudy.pdf",  p2, width = 10, height = 6)
+ggsave("../results/psm/intensity/cs_hydrogen_s1_eventstudy.pdf", p3, width = 10, height = 6)
+ggsave("../results/psm/intensity/cs_hydrogen_s2_eventstudy.pdf", p4, width = 10, height = 6)
 ```
 
 ---
@@ -359,7 +364,8 @@ autocorrelation structure, then inject an artificial ATT.
 
 ```{r power-function}
 run_power_sim <- function(cs_data, att_true, n_sims = 200,
-                          label = "", n_treated_target = NULL) {
+                          label = "", n_treated_target = NULL,
+                          control_group = "notyettreated") {
   
   # Use only control firms as the empirical baseline
   controls_df <- cs_data[cs_data$is_control == 1, ]
@@ -435,7 +441,8 @@ run_power_sim <- function(cs_data, att_true, n_sims = 200,
         tname         = "period",
         idname        = "firm_id_sim",
         gname         = "g_period_sim",
-        control_group = "notyettreated",
+        control_group = control_group,
+        anticipation  = 0,
         bstrap        = FALSE,
         #biters        = 199,   # fewer iters for speed in simulation
         panel         = TRUE,
@@ -454,8 +461,19 @@ run_power_sim <- function(cs_data, att_true, n_sims = 200,
 }
 ```
 
-```{r power-run, eval=FALSE}
+```{r power-run, eval=RUN_POWER}
 library(parallel)
+
+# Robust parallelism: fork when available, but fall back to serial if the fork
+# workers fail (e.g. a non-interactive session), so an overnight run never
+# silently returns no results. Shadows parallel::mclapply for the calls below.
+mclapply <- function(X, FUN, ..., mc.cores = min(4L, parallel::detectCores())) {
+  res <- tryCatch(parallel::mclapply(X, FUN, ..., mc.cores = mc.cores),
+                  error = function(e) base::lapply(X, FUN))
+  if (any(vapply(res, function(z) inherits(z, "try-error"), logical(1))))
+    res <- base::lapply(X, FUN)
+  res
+}
 
 # ATT grid: effects of 5% to 30% increase in collaboration count
 # On log scale: log(1 + effect) ≈ effect for small effects
@@ -465,7 +483,7 @@ att_grid <- log(1 + c(0.05, 0.10, 0.15, 0.20, 0.25, 0.30))
 cat("Running power simulation: Hydrogen Spec 1\n")
 power_h_s1 <- unlist(
   mclapply(att_grid, function(a)
-    run_power_sim(hydrogen_s1, a, n_sims = 200, label = "H-S1"),
+    run_power_sim(hydrogen_s1, a, n_sims = 200, label = "H-S1", control_group = cg_for("hydrogen")),
   mc.cores = 4)
 )
 
@@ -473,7 +491,7 @@ power_h_s1 <- unlist(
 cat("Running power simulation: Hydrogen Spec 2\n")
 power_h_s2 <- unlist(
   mclapply(att_grid, function(a)
-    run_power_sim(hydrogen_s2, a, n_sims = 200, label = "H-S2"),
+    run_power_sim(hydrogen_s2, a, n_sims = 200, label = "H-S2", control_group = cg_for("hydrogen")),
   mc.cores = 4)
 )
 
@@ -481,7 +499,7 @@ power_h_s2 <- unlist(
 cat("Running power simulation: Battery Spec 1\n")
 power_b_s1 <- unlist(
   mclapply(att_grid, function(a)
-    run_power_sim(battery_s1, a, n_sims = 200, label = "B-S1"),
+    run_power_sim(battery_s1, a, n_sims = 200, label = "B-S1", control_group = cg_for("battery")),
   mc.cores = 4)
 )
 
@@ -489,7 +507,7 @@ power_b_s1 <- unlist(
 cat("Running power simulation: Battery Spec 2\n")
 power_b_s2 <- unlist(
   mclapply(att_grid, function(a)
-    run_power_sim(battery_s2, a, n_sims = 200, label = "B-S2"),
+    run_power_sim(battery_s2, a, n_sims = 200, label = "B-S2", control_group = cg_for("battery")),
   mc.cores = 4)
 )
 
@@ -503,20 +521,20 @@ power_results <- data.frame(
 )
 
 print(power_results)
-write.csv(power_results, "../results/intensity/power_simulation_results.csv",
+write.csv(power_results, "../results/psm/intensity/power_simulation_results.csv",
           row.names = FALSE)
 ```
 
-```{r power-load}
+```{r power-load, eval=RUN_POWER}
 # once power analysis ran, otherwise remove eval = FALSE
-power_results <- read.csv("../results/intensity/power_simulation_results.csv")
+power_results <- read.csv("../results/psm/intensity/power_simulation_results.csv")
 ```
 
-```{r power-plot}
+```{r power-plot, eval=RUN_POWER}
 
 # --- Estimated effects from main ATT results ---
-att_h <- (exp(agg_hydrogen_s2_simple$overall.att) - 1) * 100
-att_b <- (exp(agg_battery_s2_simple$overall.att)  - 1) * 100
+att_h <- (exp(agg_hydrogen_s1_simple$overall.att) - 1) * 100
+att_b <- (exp(agg_battery_s1_simple$overall.att)  - 1) * 100
 
 # --- Reshape data for plotting ---
 power_long <- power_results %>%
@@ -584,7 +602,7 @@ p_power <- ggplot(power_long,
   annotate("text",
            x = min(power_results$att_pct) + 1,
            y = 0.84,
-           label = "80% power threshold",
+           label = "",
            colour = "grey40",
            size = 3.5,
            hjust = 0) +
@@ -617,9 +635,9 @@ p_power <- ggplot(power_long,
     colour = NULL,
     shape = NULL,
     linewidth = NULL,
-    alpha = NULL,
+    alpha = NULL
     #title = "Power Simulation — C&S Estimator on Matched Samples",
-    caption = "200 simulation runs per ATT level. Baseline DGP from real control-group data."
+    #caption = "200 simulation runs per ATT level. Baseline DGP from real control-group data."
   ) +
 
   theme_minimal(base_size = 12) +
@@ -627,7 +645,7 @@ p_power <- ggplot(power_long,
 
 print(p_power)
 
-ggsave("../results/intensity/power_simulation_plot.pdf",
+ggsave("../results/psm/intensity/power_simulation_plot.pdf",
        p_power,
        width = 9,
        height = 6)
@@ -643,12 +661,78 @@ kable(att_table, digits = 4,
   kable_styling(bootstrap_options = c("striped", "condensed"),
                 full_width = FALSE) %>%
   pack_rows("Primary specifications", 1, 2) %>%
-  pack_rows("Balance robustness", 3, 4) %>%
-  pack_rows("Firm-level clustering", 5, 6) %>%
-  pack_rows("Never-treated controls", 7, 8)
+  pack_rows("Larger control group", 3, 4) %>%
+  pack_rows("Not-yet-treated controls (hydrogen)", 5, 5)
 
-write.csv(att_table, "../results/intensity/cs_att_summary.csv", row.names = FALSE)
+# att_table is already written to results/intensity/att_summary_table.csv above;
+# the former cs_att_summary.csv export was a byte-identical duplicate and is dropped.
 cat("\n All outputs saved to results/\n")
+```
+
+---
+
+# 5. Export long-format results (per-folder, for notebook 08)
+
+Writes long-format CSVs into this file's own `results/intensity/` folder, mirroring
+the `07_ck_didestimation_composition_techtagged` export schema, so notebook 08 can
+read the overall-total ("intensity") reference outcome from a clean per-folder
+source instead of the legacy `results/event_study_all.csv` / `results/att_summary_all.csv`.
+The legacy writes above are intentionally KEPT until 08 is repointed and verified.
+
+```{r export-intensity}
+INTENSITY_TIME_UNIT <- "month"   # this file is monthly (YYYYMM coding); no quarterly toggle
+
+# 1) Dynamic event study (long): one row per (Technology, Outcome, e).
+#    SAME 95% CI convention (att +/- 1.96*se) and SAME "<Technology> -- <Outcome>"
+#    label convention as the composition export, so 08 reads both identically.
+export_dynamic <- function(agg_dyn, technology, outcome) {
+  .crit <- if (!is.null(agg_dyn$crit.val.egt) && is.finite(agg_dyn$crit.val.egt))
+    agg_dyn$crit.val.egt else qnorm(0.975)   # simultaneous band when available
+  data.frame(
+    label      = sprintf("%s -- %s", technology, outcome),
+    Technology = technology,
+    Outcome    = outcome,
+    e          = agg_dyn$egt,
+    att        = agg_dyn$att.egt,
+    se         = agg_dyn$se.egt,
+    ci_lower   = agg_dyn$att.egt - .crit * agg_dyn$se.egt,
+    ci_upper   = agg_dyn$att.egt + .crit * agg_dyn$se.egt,
+    TimeUnit   = INTENSITY_TIME_UNIT,
+    stringsAsFactors = FALSE
+  )
+}
+
+# This file estimates a single outcome (total/intensity); export the primary-spec
+# (S2) dynamic ATTs for battery and hydrogen.
+event_study_intensity <- bind_rows(
+  export_dynamic(agg_battery_s1_dyn,  "Battery",  "Total collabs"),
+  export_dynamic(agg_hydrogen_s1_dyn, "Hydrogen", "Total collabs")
+)
+
+write.csv(event_study_intensity,
+          "../results/psm/intensity/event_study_intensity.csv", row.names = FALSE)
+
+# 2) Overall ATT summary in the SAME schema as att_techtagged_table.csv:
+#    Technology, Outcome, Type, TimeUnit, ATT, SE, p_value, pretrend_*, N_*.
+att_summary_intensity <- bind_rows(
+  make_att_row_std(agg_battery_s1_simple,  "Battery",  "Total collabs", "Primary",
+                   cs_out = cs_battery_s1,  df = battery_s1,  yname = "log_collabs"),
+  make_att_row_std(agg_hydrogen_s1_simple, "Hydrogen", "Total collabs", "Primary",
+                   cs_out = cs_hydrogen_s1, df = hydrogen_s1, yname = "log_collabs")
+)
+att_summary_intensity$TimeUnit <- INTENSITY_TIME_UNIT
+att_summary_intensity <- att_summary_intensity[, c(
+  "Technology", "Outcome", "Type", "TimeUnit", "ATT", "SE", "p_value",
+  "pretrend_stat", "pretrend_p_value", "pretrend_test", "N_obs", "N_units", "N_treated"
+)]
+
+write.csv(att_summary_intensity,
+          "../results/psm/intensity/att_summary_intensity.csv", row.names = FALSE)
+
+cat("\n--- Per-folder intensity exports ---\n")
+cat("event_study_intensity.csv:", nrow(event_study_intensity), "rows; labels:",
+    paste(unique(event_study_intensity$label), collapse = " | "), "\n")
+cat("att_summary_intensity.csv:", nrow(att_summary_intensity), "rows\n")
 ```
 
 ---
@@ -656,8 +740,9 @@ cat("\n All outputs saved to results/\n")
 # Notes for paper
 
 - **Outcome variable**: log_collabs — log-transformed monthly collaboration count. 
-- **Estimator**: Callaway & Sant'Anna (2021, *Journal of Econometrics*), 
-  control group = not-yet-treated, bootstrap inference (999 iterations).
+- **Estimator**: Callaway & Sant'Anna (2021, *Journal of Econometrics*),
+  primary control group = never-treated (both technologies), firm-level clustered
+  SEs, bootstrap inference (999 iterations); not-yet-treated shown as robustness.
 - **Power simulation**: 150 runs per ATT level, DGP drawn from real control-group 
   data to preserve empirical variance and autocorrelation structure 
   (Egerod & Hollenbach 2024; Black et al. 2022).
