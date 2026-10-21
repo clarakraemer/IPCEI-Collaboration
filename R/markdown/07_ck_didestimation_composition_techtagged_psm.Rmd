@@ -168,6 +168,22 @@ load_cs <- function(path, unit = TIME_UNIT) {
     df[[sub("^n_collabs", "any_collabs", cc)]] <- as.integer(df[[cc]] > 0)
   }
 
+  # ── difference-of-logs contrasts (mirrors _cs_helpers.R::load_cs) ──────────
+  # Built here so the inline PSM loader and the shared helper stay identical.
+  # They are NOT added to outcome_map below, so they never enter att_table or
+  # its Benjamini-Hochberg family; they are estimated as secondary analyses in
+  # 10_ck_diagnostics_reference_country.R and reported with nominal p-values.
+  for (tech in c("battery", "hydrogen")) {
+    f <- paste0("log_collabs_", tech)
+    u <- paste0("log_collabs_nonfunded_", tech)
+    if (all(c(f, u) %in% names(df)))
+      df[[paste0("log_rel_tech_", tech)]] <- df[[f]] - df[[u]]
+    e <- paste0("log_collabs_eu_crossborder_", tech)
+    n <- paste0("log_collabs_non_eu_", tech)
+    if (all(c(e, n) %in% names(df)))
+      df[[paste0("log_rel_geo_", tech)]] <- df[[e]] - df[[n]]
+  }
+
   df
 }
 

@@ -286,7 +286,25 @@
       "Bash(Rscript 10_ck_diagnostics_reference_country.R)",
       "Bash(.venv/bin/python -m ipcei_spillovers.diagnostics_round3)",
       "Bash(grep -v \"^$\\\\|=== C&S\")",
-      "Bash(.venv/bin/python -c \"from ipcei_spillovers.diagnostics_round3 import figures; figures\\(\\)\")"
+      "Bash(.venv/bin/python -c \"from ipcei_spillovers.diagnostics_round3 import figures; figures\\(\\)\")",
+      "Bash(sed -i '' -e 's/^RUN_P1     <- FALSE/RUN_P1     <- FALSE/' /tmp/s10.R)",
+      "Bash(.venv)",
+      "Read(//dev/**)",
+      "Bash(nohup Rscript _tmp_run_part5.R)",
+      "Bash(.venv/bin/python -c \"import ipcei_spillovers.tables as t; print\\('imports ok'\\)\")",
+      "Bash(grep \"Reference \\\\`\" /tmp/mainlog.txt)",
+      "Bash(latexmk -C)",
+      "Bash(latexmk -pdf -interaction=nonstopmode SI.tex)",
+      "Bash(echo \"SI exit: $?\")",
+      "Bash(latexmk -pdf -interaction=nonstopmode Main.tex)",
+      "Bash(echo \"Main exit: $?\")",
+      "Bash(pdflatex -interaction=nonstopmode Main.tex)",
+      "Bash(grep \"Reference \\\\`\" /tmp/one.txt)",
+      "Bash(grep -c 'Reference `' /tmp/one.txt)",
+      "Bash(echo \"undefined refs: $\\(grep -c 'Reference `' /tmp/one.txt\\) | undefined cites: $\\(grep -c 'Citation.*undefined' /tmp/one.txt\\)\")",
+      "Bash(/usr/local/bin/gs -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=/tmp/main.txt Main.pdf)",
+      "Bash(awk 'NR>=400 && NR<=440' /tmp/main.txt)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }

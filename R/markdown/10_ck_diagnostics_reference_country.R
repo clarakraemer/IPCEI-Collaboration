@@ -412,31 +412,59 @@ if (RUN_P2_P5) {
   # C&S is linear in the outcome, so the ATT on the difference equals the
   # difference of the two separately estimated ATTs, with the correct SE
   # from the shared influence function. That covariance is the whole point.
-  cat("\n\n######## PART 5: funded-vs-unrelated difference and raw counts ########\n")
+  cat("\n\n######## PART 5: difference contrasts, extensive margin, raw counts ########\n")
+  # The contrast columns now come from load_cs (both implementations), so these
+  # are ordinary outcomes rather than an ad hoc routine. Reported as secondary
+  # analyses with nominal p-values; they do NOT enter the primary table's
+  # Benjamini-Hochberg family, which stays at its original nine outcomes.
   p5 <- list()
+  CONTRASTS <- list(
+    rel_tech = "Relative technology (log diff)",
+    rel_geo  = "Relative geography, EU minus non-EU (log diff)")
+
   for (tech in c("Battery", "Hydrogen")) {
     sdf <- panels[[tech]]
     tl  <- tolower(tech)
-    yf <- outcome_map$tech_focused[[tl]]; yu <- outcome_map$non_funded[[tl]]
-    if (!all(c(yf, yu) %in% names(sdf))) next
-    sdf$log_rel_tech <- sdf[[yf]] - sdf[[yu]]
 
-    ks <- if (tech == "Hydrogen") c(0, 3) else 0
-    for (k in ks) {
-      cs <- run_cs(sdf, "log_rel_tech",
-                   label = sprintf("%s relative-technology k=%d", tech, k),
-                   biters = BITERS_DX, anticipation = k)
-      ag <- agg_simple(cs); if (is.null(ag)) next
-      pt <- es_pretrend(cs)
-      p5[[paste(tech, "rel", k)]] <- data.frame(
-        technology = tech, outcome = "Relative technology (log diff)",
-        anticipation = k, att = round(ag$overall.att, 4),
-        se = round(ag$overall.se, 4),
-        p = pval_from_att(ag$overall.att, ag$overall.se),
-        lo = round(ag$overall.att - 1.96 * ag$overall.se, 4),
-        hi = round(ag$overall.att + 1.96 * ag$overall.se, 4),
-        pretrend_p = pt$p)
+    for (ck in names(CONTRASTS)) {
+      y <- outcome_map[[ck]][[tl]]
+      if (!(y %in% names(sdf))) { cat("missing contrast column:", y, "\n"); next }
+      ks <- if (tech == "Hydrogen") c(0, 3) else 0
+      for (k in ks) {
+        cs <- run_cs(sdf, y, label = sprintf("%s %s k=%d", tech, ck, k),
+                     biters = BITERS_DX, anticipation = k)
+        ag <- agg_simple(cs); if (is.null(ag)) next
+        pt <- es_pretrend(cs)
+        p5[[paste(tech, ck, k)]] <- data.frame(
+          technology = tech, outcome = CONTRASTS[[ck]],
+          anticipation = k, att = round(ag$overall.att, 4),
+          se = round(ag$overall.se, 4),
+          p = pval_from_att(ag$overall.att, ag$overall.se),
+          lo = round(ag$overall.att - 1.96 * ag$overall.se, 4),
+          hi = round(ag$overall.att + 1.96 * ag$overall.se, 4),
+          pretrend_p = pt$p)
+      }
     }
+
+    # Extensive margin on the primary outcome, re-run here so all three
+    # estimands in the supplementary table come from one script and one seed.
+    yext <- paste0("any_collabs_", tl)
+    if (yext %in% names(sdf)) {
+      cs <- run_cs(sdf, yext, label = paste(tech, "extensive margin"),
+                   biters = BITERS_DX)
+      ag <- agg_simple(cs)
+      if (!is.null(ag))
+        p5[[paste(tech, "ext")]] <- data.frame(
+          technology = tech, outcome = "Technology-related (any collaboration)",
+          anticipation = 0, att = round(ag$overall.att, 4),
+          se = round(ag$overall.se, 4),
+          p = pval_from_att(ag$overall.att, ag$overall.se),
+          lo = round(ag$overall.att - 1.96 * ag$overall.se, 4),
+          hi = round(ag$overall.att + 1.96 * ag$overall.se, 4),
+          pretrend_p = es_pretrend(cs)$p)
+    }
+
+    yf <- outcome_map$tech_focused[[tl]]
 
     # Raw-count ATT: extra recorded collaborations per firm-month.
     ycount <- sub("^log_collabs", "n_collabs", yf)

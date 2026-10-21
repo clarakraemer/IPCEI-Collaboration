@@ -39,6 +39,24 @@ load_cs <- function(path) {
     df[[sub("^n_collabs", "log_collabs", cc)]] <- log1p(df[[cc]])
     df[[sub("^n_collabs", "any_collabs", cc)]] <- as.integer(df[[cc]] > 0)
   }
+
+  # Difference-of-logs contrasts. C&S is linear in the outcome, so the ATT on a
+  # difference equals the difference of the two separately estimated ATTs, but
+  # with the correct standard error from the shared influence function. That
+  # covariance is the point: comparing two separately estimated ATTs by their
+  # significance stars is not a test of their difference.
+  # These are NOT n_collabs* columns, so they never enter the generic log1p
+  # loop above and never enter the primary outcome table or its BH family.
+  for (tech in c("battery", "hydrogen")) {
+    f <- paste0("log_collabs_", tech)
+    u <- paste0("log_collabs_nonfunded_", tech)
+    if (all(c(f, u) %in% names(df)))
+      df[[paste0("log_rel_tech_", tech)]] <- df[[f]] - df[[u]]
+    e <- paste0("log_collabs_eu_crossborder_", tech)
+    n <- paste0("log_collabs_non_eu_", tech)
+    if (all(c(e, n) %in% names(df)))
+      df[[paste0("log_rel_geo_", tech)]] <- df[[e]] - df[[n]]
+  }
   df
 }
 
@@ -198,7 +216,15 @@ outcome_map <- list(
   non_funded         = c(battery = "log_collabs_nonfunded_battery",
                          hydrogen = "log_collabs_nonfunded_hydrogen"),
   cross_sector_nace1 = c(battery = "log_collabs_crosssector_nace1_battery",
-                         hydrogen = "log_collabs_crosssector_nace1_hydrogen")
+                         hydrogen = "log_collabs_crosssector_nace1_hydrogen"),
+  # Secondary contrasts, introduced during the robustness analysis. They are
+  # deliberately absent from the outcome_map in 07_..._psm.Rmd so that the
+  # primary table and its Benjamini-Hochberg family stay at the original nine
+  # outcomes; these are reported with nominal p-values as exploratory results.
+  rel_tech           = c(battery = "log_rel_tech_battery",
+                         hydrogen = "log_rel_tech_hydrogen"),
+  rel_geo            = c(battery = "log_rel_geo_battery",
+                         hydrogen = "log_rel_geo_hydrogen")
 )
 
 # Analytic classification for the att table Type column (matches the PSM tables,
