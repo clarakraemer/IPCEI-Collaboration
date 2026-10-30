@@ -420,7 +420,7 @@ if (RUN_P2_P5) {
   p5 <- list()
   CONTRASTS <- list(
     rel_tech = "Relative technology (log diff)",
-    rel_geo  = "Relative geography, EU minus non-EU (log diff)")
+    rel_geo  = "Relative geography, EU-internal minus international (log diff)")
 
   for (tech in c("Battery", "Hydrogen")) {
     sdf <- panels[[tech]]

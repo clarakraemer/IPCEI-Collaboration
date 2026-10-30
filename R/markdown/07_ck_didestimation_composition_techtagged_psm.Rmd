@@ -178,8 +178,12 @@ load_cs <- function(path, unit = TIME_UNIT) {
     u <- paste0("log_collabs_nonfunded_", tech)
     if (all(c(f, u) %in% names(df)))
       df[[paste0("log_rel_tech_", tech)]] <- df[[f]] - df[[u]]
-    e <- paste0("log_collabs_eu_crossborder_", tech)
-    n <- paste0("log_collabs_non_eu_", tech)
+    # Geographic contrast on the COLLABORATION-LEVEL, mutually exclusive
+    # categories. The earlier version differenced the dyad-level cross-border EU
+    # and non-EU outcomes, which overlap (one collaboration could enter both),
+    # so that contrast was attenuated by construction and is not used.
+    e <- paste0("log_collabs_eu_internal_", tech)
+    n <- paste0("log_collabs_international_", tech)
     if (all(c(e, n) %in% names(df)))
       df[[paste0("log_rel_geo_", tech)]] <- df[[e]] - df[[n]]
   }
@@ -236,6 +240,26 @@ outcome_map <- list(
   # (total minus technology-tagged, built in nb03).
   non_funded    = c(battery = "log_collabs_nonfunded_battery",
                     hydrogen = "log_collabs_nonfunded_hydrogen"),
+  # Collaboration-level geography (built in nb03). The cross_border / non_eu /
+  # domestic outcomes above are DYAD-level, so one collaboration can enter
+  # several of them; these classify the collaboration as a whole from its
+  # participants' headquarters countries and form two mutually exclusive pairs,
+  # national vs cross-border and EU-internal vs international.
+  cl_national      = c(battery = "log_collabs_national_battery",
+                       hydrogen = "log_collabs_national_hydrogen"),
+  cl_crossborder   = c(battery = "log_collabs_crossborder_battery",
+                       hydrogen = "log_collabs_crossborder_hydrogen"),
+  cl_eu_internal   = c(battery = "log_collabs_eu_internal_battery",
+                       hydrogen = "log_collabs_eu_internal_hydrogen"),
+  cl_international = c(battery = "log_collabs_international_battery",
+                       hydrogen = "log_collabs_international_hydrogen"),
+  # Sectoral distance at NACE-1, collaboration level and mutually exclusive.
+  # Supersedes cross_sector / within_sector, which are dyad-level and overlap on
+  # ~72% of the collaborations counted as within-sector.
+  cl_crosssector_n1 = c(battery = "log_collabs_crosssector_n1_battery",
+                        hydrogen = "log_collabs_crosssector_n1_hydrogen"),
+  cl_samesector_n1  = c(battery = "log_collabs_samesector_n1_battery",
+                        hydrogen = "log_collabs_samesector_n1_hydrogen"),
   # Robustness: cross-sector at NACE-1 resolution (nace2_proxy_nace1).
   # Same column auto-log-transformed by load_cs; primary cross_sector stays NACE-2.
   cross_sector_nace1 = c(battery = "log_collabs_crosssector_nace1_battery",
@@ -393,6 +417,16 @@ cs_dom  <- run_pair("domestic",     "tech-tagged domestic (placebo)")
 cs_ws   <- run_pair("within_sector","tech-tagged within-sector (placebo)")
 cs_nf   <- run_pair("non_funded",   "collaboration outside funded technology")
 
+# Collaboration-level geography: two mutually exclusive pairs. These replace the
+# dyad-level cross-border EU / non-EU / domestic split as the sharper test of the
+# scheme's geographic condition; the dyad-level outcomes are kept alongside.
+cs_cln  <- run_pair("cl_national",      "collaboration-level national")
+cs_clcb <- run_pair("cl_crossborder",   "collaboration-level cross-border")
+cs_cleu <- run_pair("cl_eu_internal",   "collaboration-level EU-internal")
+cs_clint<- run_pair("cl_international", "collaboration-level international")
+cs_clxs <- run_pair("cl_crosssector_n1",  "collaboration-level cross-sector (NACE-1)")
+cs_clss <- run_pair("cl_samesector_n1",   "collaboration-level same-sector (NACE-1)")
+
 # Optional: cross-sector restricted to EU-EU ties. Comment out if not built.
 cs_xseu <- tryCatch(run_pair("cross_sector_eu", "tech-tagged cross-sector (EU only)"),
                     error = function(e) list(battery = NULL, hydrogen = NULL))
@@ -421,14 +455,22 @@ for (nm in names(es)) {
 ```{r summary-table}
 spec <- list(
   list(cs_tech, "Technology-tagged collaborations", "Primary", "tech_focused"),
-  list(cs_cb,   "Cross-border EU collaborations",    "Primary", "cross_border"),
-  list(cs_xs,   "Cross-sector collaborations",       "Primary", "cross_sector"),
-  list(cs_xs_n1,"Cross-sector collaborations (NACE-1)","Robustness (NACE-1)","cross_sector_nace1"),
-  list(cs_neu,  "Non-EU collaborations",             "Placebo",    "non_eu"),
-  list(cs_dom,  "Domestic collaborations",           "Placebo",    "domestic"),
-  list(cs_ws,   "Within-sector collaborations",      "Placebo",    "within_sector"),
+
+  # The dyad-level geographic outcomes (cross_border / non_eu / domestic) are no
+  # longer reported: a single collaboration could enter several of them at once,
+  # so they double-count. They are superseded by the collaboration-level,
+  # mutually exclusive set below. Still estimated above (cs_cb, cs_neu, cs_dom)
+  # so the original specification stays reproducible, but kept out of att_table
+  # and therefore out of the Benjamini-Hochberg family.
+
   list(cs_nf,   "Non-funded collaborations",         "Benchmark",  "non_funded"),
-  list(cs_xseu, "Cross-sector EU-only collaborations","Primary","cross_sector_eu")
+
+  list(cs_cln,  "National collaborations",          "Benchmark", "cl_national"),
+  list(cs_clcb, "Cross-border collaborations",      "Primary",   "cl_crossborder"),
+  list(cs_cleu, "EU-internal collaborations",       "Primary",   "cl_eu_internal"),
+  list(cs_clint,"International collaborations",     "Benchmark", "cl_international"),
+  list(cs_clxs, "Cross-sector collaborations",      "Primary",   "cl_crosssector_n1"),
+  list(cs_clss, "Same-sector collaborations",       "Benchmark", "cl_samesector_n1")
 )
 
 att_table <- do.call(rbind, lapply(spec, function(s) {
@@ -457,23 +499,26 @@ write.csv(att_table,
 # (technology, outcome-label, cs object) for every outcome we want an ES for.
 # Labels MUST match the convention notebook 08 filters on. Adjust the label
 # strings here if 08 expects a different separator/spelling.
+# Labels MUST match the Outcome strings in att_table, since notebook 08 filters
+# the export on them. Geography and sector are the collaboration-level,
+# mutually exclusive outcomes; the superseded dyad-level ones are not exported.
 es_spec <- list(
   list("Battery",  "Technology-tagged collaborations", cs_tech$battery),
   list("Hydrogen", "Technology-tagged collaborations", cs_tech$hydrogen),
-  list("Battery",  "Cross-border EU collaborations",   cs_cb$battery),
-  list("Hydrogen", "Cross-border EU collaborations",   cs_cb$hydrogen),
-  list("Battery",  "Cross-sector collaborations",      cs_xs$battery),
-  list("Hydrogen", "Cross-sector collaborations",      cs_xs$hydrogen),
-  list("Battery",  "Non-EU collaborations",            cs_neu$battery),
-  list("Hydrogen", "Non-EU collaborations",            cs_neu$hydrogen),
-  list("Battery",  "Domestic collaborations",          cs_dom$battery),
-  list("Hydrogen", "Domestic collaborations",          cs_dom$hydrogen),
-  list("Battery",  "Within-sector collaborations",     cs_ws$battery),
-  list("Hydrogen", "Within-sector collaborations",     cs_ws$hydrogen),
+  list("Battery",  "EU-internal collaborations",       cs_cleu$battery),
+  list("Hydrogen", "EU-internal collaborations",       cs_cleu$hydrogen),
+  list("Battery",  "Cross-sector collaborations",      cs_clxs$battery),
+  list("Hydrogen", "Cross-sector collaborations",      cs_clxs$hydrogen),
+  list("Battery",  "Cross-border collaborations",      cs_clcb$battery),
+  list("Hydrogen", "Cross-border collaborations",      cs_clcb$hydrogen),
+  list("Battery",  "International collaborations",     cs_clint$battery),
+  list("Hydrogen", "International collaborations",     cs_clint$hydrogen),
+  list("Battery",  "National collaborations",          cs_cln$battery),
+  list("Hydrogen", "National collaborations",          cs_cln$hydrogen),
+  list("Battery",  "Same-sector collaborations",       cs_clss$battery),
+  list("Hydrogen", "Same-sector collaborations",       cs_clss$hydrogen),
   list("Battery",  "Non-funded collaborations",        cs_nf$battery),
-  list("Hydrogen", "Non-funded collaborations",        cs_nf$hydrogen),
-  list("Battery",  "Cross-sector EU-only collaborations", cs_xseu$battery),
-  list("Hydrogen", "Cross-sector EU-only collaborations", cs_xseu$hydrogen)
+  list("Hydrogen", "Non-funded collaborations",        cs_nf$hydrogen)
 )
 
 # Consortium-size mechanism path: compute its C&S objects HERE so the dynamic
@@ -592,15 +637,17 @@ section 4.
 ```{r robustness-techtagged}
 # Outcomes to re-run -- mirrors the section-4 spec list (the optional
 # cross_sector_eu outcome is skipped here).
+# Mirrors the section-4 spec list: the collaboration-level, mutually exclusive
+# geography and sector outcomes, not the superseded dyad-level ones.
 rob_spec <- list(
-  list("tech_focused",  "Technology-tagged collaborations"),
-  list("cross_border",  "Cross-border EU collaborations"),
-  list("cross_sector",  "Cross-sector collaborations"),
-  list("cross_sector_nace1", "Cross-sector collaborations (NACE-1)"),
-  list("non_eu",        "Non-EU collaborations"),
-  list("domestic",      "Domestic collaborations"),
-  list("within_sector", "Within-sector collaborations"),
-  list("non_funded",    "Non-funded collaborations")
+  list("tech_focused",      "Technology-tagged collaborations"),
+  list("cl_eu_internal",    "EU-internal collaborations"),
+  list("cl_crosssector_n1", "Cross-sector collaborations"),
+  list("cl_crossborder",    "Cross-border collaborations"),
+  list("cl_international",  "International collaborations"),
+  list("cl_national",       "National collaborations"),
+  list("cl_samesector_n1",  "Same-sector collaborations"),
+  list("non_funded",        "Non-funded collaborations")
 )
 
 # One robustness ATT row: pick the tech-tagged column from outcome_map, run C&S
@@ -798,9 +845,23 @@ if (length(rb_runs) == 0) {
 
 # 8. Benjamini--Hochberg Correction (technology-tagged)
 
-BH applied **within each value chain**, across that chain's outcomes, using the
-p-values from the section-4 `att_table` (computed under the current
-`TIME_UNIT`).
+BH applied **within each technology**, across the CONFIRMATORY outcomes only,
+using the p-values from the section-4 `att_table`.
+
+The confirmatory family is the three outcomes the scheme's conditions target,
+as set out in the paper's outcome design: technology-related, EU-internal and
+cross-sector collaboration. The benchmarks (total, technology-unrelated,
+cross-border, international, national, within-sector) are reference quantities
+rather than hypotheses the paper sets out to reject, so correcting across them
+would control the false discovery rate over nulls that are not being tested.
+The robustness operationalisations (NACE-1 and EU-only cross-sector) are
+alternative measures of a confirmatory outcome, so including them would correct
+the same hypothesis twice. Both are therefore excluded from the family and
+reported with nominal p-values.
+
+The correction across ALL estimated outcomes is still written to
+`bh_correction_techtagged_alloutcomes.csv`. It is not reported in the paper;
+it exists so the conservative figure is available if a referee asks.
 
 ```{r bh-correction}
 bh_stars <- function(p) ifelse(is.na(p), "",
@@ -808,8 +869,15 @@ bh_stars <- function(p) ifelse(is.na(p), "",
                         ifelse(p < 0.05, "**",
                         ifelse(p < 0.10, "*", ""))))
 
-make_bh_df <- function(tech) {
+# Outcomes the scheme's conditions target. Defined by the paper's outcome
+# design, not by the estimates.
+CONFIRMATORY <- c("Technology-tagged collaborations",
+                  "EU-internal collaborations",
+                  "Cross-sector collaborations")
+
+make_bh_df <- function(tech, outcomes = CONFIRMATORY) {
   sub   <- att_table[att_table$Technology == tech, ]
+  if (!is.null(outcomes)) sub <- sub[sub$Outcome %in% outcomes, ]
   p_raw <- sub$p_value
   p_bh  <- p.adjust(p_raw, method = "BH")
   data.frame(
@@ -825,10 +893,19 @@ make_bh_df <- function(tech) {
 
 bh_df <- rbind(make_bh_df("Battery"), make_bh_df("Hydrogen"))
 
-cat("\n=== Benjamini-Hochberg (per value chain,", TIME_UNIT, ") ===\n", sep = "")
+cat("\n=== Benjamini-Hochberg, confirmatory family (", TIME_UNIT, ") ===\n", sep = "")
 print(bh_df, row.names = FALSE)
 write.csv(bh_df,
           file.path(out_dir, "bh_correction_techtagged.csv"), row.names = FALSE)
+
+# Not reported: the correction across every estimated outcome, kept available
+# for a referee response.
+bh_all <- rbind(make_bh_df("Battery", NULL), make_bh_df("Hydrogen", NULL))
+cat("\n=== Benjamini-Hochberg, all outcomes (NOT REPORTED) ===\n", sep = "")
+print(bh_all, row.names = FALSE)
+write.csv(bh_all,
+          file.path(out_dir, "bh_correction_techtagged_alloutcomes.csv"),
+          row.names = FALSE)
 ```
 
 ---

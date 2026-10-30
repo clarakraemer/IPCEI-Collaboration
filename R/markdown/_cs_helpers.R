@@ -52,8 +52,12 @@ load_cs <- function(path) {
     u <- paste0("log_collabs_nonfunded_", tech)
     if (all(c(f, u) %in% names(df)))
       df[[paste0("log_rel_tech_", tech)]] <- df[[f]] - df[[u]]
-    e <- paste0("log_collabs_eu_crossborder_", tech)
-    n <- paste0("log_collabs_non_eu_", tech)
+    # Geographic contrast on the COLLABORATION-LEVEL, mutually exclusive
+    # categories. The earlier version differenced the dyad-level cross-border EU
+    # and non-EU outcomes, which overlap (one collaboration could enter both),
+    # so that contrast was attenuated by construction and is not used.
+    e <- paste0("log_collabs_eu_internal_", tech)
+    n <- paste0("log_collabs_international_", tech)
     if (all(c(e, n) %in% names(df)))
       df[[paste0("log_rel_geo_", tech)]] <- df[[e]] - df[[n]]
   }
@@ -217,6 +221,22 @@ outcome_map <- list(
                          hydrogen = "log_collabs_nonfunded_hydrogen"),
   cross_sector_nace1 = c(battery = "log_collabs_crosssector_nace1_battery",
                          hydrogen = "log_collabs_crosssector_nace1_hydrogen"),
+  # Collaboration-level geography (built in nb03). Unlike the dyad-level
+  # outcomes above, these classify the collaboration as a whole from its
+  # participants' headquarters countries, so national/cross-border and
+  # EU-internal/international are mutually exclusive pairs.
+  cl_national        = c(battery = "log_collabs_national_battery",
+                         hydrogen = "log_collabs_national_hydrogen"),
+  cl_crossborder     = c(battery = "log_collabs_crossborder_battery",
+                         hydrogen = "log_collabs_crossborder_hydrogen"),
+  cl_eu_internal     = c(battery = "log_collabs_eu_internal_battery",
+                         hydrogen = "log_collabs_eu_internal_hydrogen"),
+  cl_international   = c(battery = "log_collabs_international_battery",
+                         hydrogen = "log_collabs_international_hydrogen"),
+  cl_crosssector_n1  = c(battery = "log_collabs_crosssector_n1_battery",
+                         hydrogen = "log_collabs_crosssector_n1_hydrogen"),
+  cl_samesector_n1   = c(battery = "log_collabs_samesector_n1_battery",
+                         hydrogen = "log_collabs_samesector_n1_hydrogen"),
   # Secondary contrasts, introduced during the robustness analysis. They are
   # deliberately absent from the outcome_map in 07_..._psm.Rmd so that the
   # primary table and its Benjamini-Hochberg family stay at the original nine
@@ -239,7 +259,15 @@ outcome_type <- c(
   domestic           = "Placebo",
   within_sector      = "Placebo",
   non_funded         = "Benchmark",
-  cross_sector_nace1 = "Robustness (NACE-1)"
+  cross_sector_nace1 = "Robustness (NACE-1)",
+  cl_national        = "Benchmark",
+  cl_crossborder     = "Primary",
+  cl_eu_internal     = "Primary",
+  cl_international   = "Benchmark",
+  cl_crosssector_n1  = "Primary",
+  cl_samesector_n1   = "Benchmark",
+  rel_tech           = "Contrast",
+  rel_geo            = "Contrast"
 )
 
 # Pretty labels for the att table Outcome column (match the PSM tables).
@@ -251,5 +279,16 @@ outcome_labels <- c(
   non_eu             = "Non-EU collaborations",
   domestic           = "Domestic collaborations",
   within_sector      = "Within-sector collaborations",
-  cross_sector_nace1 = "Cross-sector collaborations (NACE-1)"
+  cross_sector_nace1 = "Cross-sector collaborations (NACE-1)",
+  non_funded         = "Non-funded collaborations",
+  cl_national        = "National collaborations",
+  cl_crossborder     = "Cross-border collaborations",
+  cl_eu_internal     = "EU-internal collaborations",
+  cl_international   = "International collaborations",
+  cl_crosssector_n1  = "Cross-sector collaborations",
+  cl_samesector_n1   = "Same-sector collaborations",
+  # Secondary contrasts. Labelled so any script that loops over outcome_map
+  # finds a label; outcome_type below gives them their own class.
+  rel_tech           = "Relative technology (log diff)",
+  rel_geo            = "Relative geography (log diff)"
 )
