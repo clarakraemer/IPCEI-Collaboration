@@ -45,3 +45,4 @@ R/results/
 .RData
 .RDataTmp
 .Rproj.user/
+_tmp_*.R

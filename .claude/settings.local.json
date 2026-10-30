@@ -349,7 +349,8 @@
       "Bash(grep -n \"tab_descriptive_{activity-mix,active-firms,partner-overlap}\\\\|written\\\\s*by role into\" CLAUDE.md)",
       "Bash(git add *)",
       "Bash(name)",
-      "Bash(git commit -q -m 'Round 4: collaboration-level geography and sector outcomes *)"
+      "Bash(git commit -q -m 'Round 4: collaboration-level geography and sector outcomes *)",
+      "Bash(git commit *)"
     ]
   }
 }
