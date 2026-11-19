@@ -1,18 +1,20 @@
-# Do subsidy conditions change who firms collaborate with? Evidence from IPCEI
+# Can green subsidies build green industries? Analysing how conditional industrial policy shapes firm collaboration
 
-Krämer, Toetzke & Egli.
+Clara Krämer, Malte Toetzke and Florian Egli.
 
-This study estimates the causal effect of IPCEI subsidies (Important Projects of
-Common European Interest) on firm-level collaboration behaviour in the EU
-battery and hydrogen value chains. IPCEI lets member states subsidise innovative
-projects on condition that recipients cooperate and disseminate knowledge within
-the EU, which makes it a rare case where a subsidy scheme targets the
-*composition* of collaboration rather than its volume.
+Governments increasingly tie industrial-policy support to conditions intended to
+spread the benefits beyond the firms that receive it. This study asks whether
+those conditions work, using the EU's IPCEI scheme (Important Projects of Common
+European Interest), which requires subsidised firms to cooperate and disseminate
+knowledge across borders and sectors within the EU.
 
 Identification is propensity-score matching followed by the
 Callaway & Sant'Anna (2021) staggered difference-in-differences estimator, on a
-firm-by-month panel built from a LinkedIn-based dataset of collaboration
-announcements (Toetzke et al. 2025). Treatment is dated at formal EC approval.
+firm-by-month panel built from a dataset of inter-organisational clean-technology
+collaborations (Toetzke et al. 2025). Treatment is dated at formal EC approval.
+Firms increase collaboration in the funded technology after approval, while the
+evidence for preferential changes in the geographic and sectoral composition of
+collaboration is weaker.
 
 ## Repository structure
 
