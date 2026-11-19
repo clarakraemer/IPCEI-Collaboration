@@ -1,0 +1,3 @@
+technology,pre_mean_active,post_mean_active,pre_mean_incl_zeros,post_mean_incl_zeros,n_firmmonths_pre_active,n_firmmonths_post_active
+Battery,5.13,4.2,0.99,1.54,67,138
+Hydrogen,4.81,5.45,2.31,3.91,1741,868

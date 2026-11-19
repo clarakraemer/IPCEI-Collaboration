@@ -1,0 +1,9 @@
+"Technology","Outcome","Type","ATT","p_value","significant","mde_pct","power_at_10","power_at_20","size"
+"Battery","EU-internal collaborations","Primary",0.1059,0.144,FALSE,20.9,0.206,0.782,0.078
+"Battery","National collaborations","Benchmark",0.1082,0.068,FALSE,18.3,0.388,0.868,0.04
+"Battery","Non-funded collaborations","Benchmark",-0.0136,0.921,FALSE,36.6,0.044,0.242,0.084
+"Hydrogen","Cross-sector collaborations","Primary",0.1249,0.083,FALSE,23.2,0.31,0.724,0.086
+"Hydrogen","International collaborations","Benchmark",0.1061,0.055,FALSE,17.7,0.47,0.888,0.05
+"Hydrogen","National collaborations","Benchmark",-0.0116,0.844,FALSE,18.4,0.336,0.866,0.046
+"Hydrogen","Non-funded collaborations","Benchmark",-0.0127,0.835,FALSE,18,0.31,0.878,0.066
+"Hydrogen","Same-sector collaborations","Benchmark",0.0773,0.142,FALSE,17.3,0.504,0.882,0.07

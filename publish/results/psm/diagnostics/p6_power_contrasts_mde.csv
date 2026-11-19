@@ -1,0 +1,5 @@
+"technology","outcome","att","p","mde_log","mde_pct","size"
+"Battery","Relative geography, EU-internal minus international (log diff)",-0.1043,0.139,0.1966,21.8,0.054
+"Hydrogen","Relative geography, EU-internal minus international (log diff)",0.0436,0.485,0.1769,19.4,0.048
+"Battery","Relative sector, cross-sector minus same-sector (log diff)",3e-04,0.995,0.1374,14.7,0.074
+"Hydrogen","Relative sector, cross-sector minus same-sector (log diff)",0.0476,0.48,0.1961,21.7,0.062

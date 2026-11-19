@@ -1,0 +1,17 @@
+"Technology","Outcome","Type","TimeUnit","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated"
+"Battery","Technology-tagged collaborations","Primary","month",0.2911,0.1121,0.009,9.455,0.58,"Wald",8280,115,29
+"Hydrogen","Technology-tagged collaborations","Primary","month",0.1628,0.0798,0.041,12.064,0.441,"ES-joint",19080,265,93
+"Battery","Non-funded collaborations","Benchmark","month",-0.0136,0.1366,0.921,10.55,0.482,"Wald",8280,115,29
+"Hydrogen","Non-funded collaborations","Benchmark","month",-0.0127,0.0611,0.835,8.455,0.749,"ES-joint",19080,265,93
+"Battery","National collaborations","Benchmark","month",0.1082,0.0592,0.068,8.076,0.706,"ES-joint",8280,115,29
+"Hydrogen","National collaborations","Benchmark","month",-0.0116,0.0591,0.844,17.502,0.132,"ES-joint",19080,265,93
+"Battery","Cross-border collaborations","Primary","month",0.2482,0.1007,0.014,12.229,0.347,"Wald",8280,115,29
+"Hydrogen","Cross-border collaborations","Primary","month",0.2048,0.0732,0.005,8.309,0.761,"ES-joint",19080,265,93
+"Battery","EU-internal collaborations","Primary","month",0.1059,0.0725,0.144,9.155,0.423,"Wald",8280,115,29
+"Hydrogen","EU-internal collaborations","Primary","month",0.1497,0.0614,0.015,12.129,0.435,"ES-joint",19080,265,93
+"Battery","International collaborations","Benchmark","month",0.2102,0.0804,0.009,12.269,0.344,"Wald",8280,115,29
+"Hydrogen","International collaborations","Benchmark","month",0.1061,0.0553,0.055,9.159,0.689,"ES-joint",19080,265,93
+"Battery","Cross-sector collaborations","Primary","month",0.1869,0.0827,0.024,10.015,0.529,"Wald",8280,115,29
+"Hydrogen","Cross-sector collaborations","Primary","month",0.1249,0.0721,0.083,12.475,0.408,"ES-joint",19080,265,93
+"Battery","Same-sector collaborations","Benchmark","month",0.1866,0.0821,0.023,10.578,0.391,"Wald",8280,115,29
+"Hydrogen","Same-sector collaborations","Benchmark","month",0.0773,0.0526,0.142,18.83,0.093,"ES-joint",19080,265,93

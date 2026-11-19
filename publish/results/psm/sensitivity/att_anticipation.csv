@@ -1,0 +1,16 @@
+"Technology","Outcome","Type","TimeUnit","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated","anticipation"
+"Battery","Technology-related","anticipation=0","month",0.2911,0.1104,0.008,9.455,0.58,"Wald",8280,115,29,0
+"Battery","Cross-border EU","anticipation=0","month",0.194,0.0863,0.025,16.067,0.139,"ES-joint",8280,115,29,0
+"Battery","Cross-sector","anticipation=0","month",0.2702,0.1024,0.008,12.725,0.312,"Wald",8280,115,29,0
+"Battery","Technology-related","anticipation=3","month",0.272,0.1066,0.011,9.455,0.58,"Wald",8280,115,29,3
+"Battery","Cross-border EU","anticipation=3","month",0.145,0.0763,0.057,16.067,0.139,"ES-joint",8280,115,29,3
+"Battery","Cross-sector","anticipation=3","month",0.2405,0.099,0.015,12.725,0.312,"Wald",8280,115,29,3
+"Hydrogen","Technology-related","anticipation=0","month",0.1628,0.08,0.042,12.064,0.441,"ES-joint",19080,265,93,0
+"Hydrogen","Cross-border EU","anticipation=0","month",0.1989,0.0668,0.003,13.749,0.317,"ES-joint",19080,265,93,0
+"Hydrogen","Cross-sector","anticipation=0","month",0.1182,0.0792,0.136,12.936,0.374,"ES-joint",19080,265,93,0
+"Hydrogen","Technology-related","anticipation=3","month",-0.0059,0.0774,0.939,12.064,0.441,"ES-joint",19080,265,93,3
+"Hydrogen","Cross-border EU","anticipation=3","month",0.0527,0.0631,0.404,13.749,0.317,"ES-joint",19080,265,93,3
+"Hydrogen","Cross-sector","anticipation=3","month",-0.0409,0.079,0.605,12.936,0.374,"ES-joint",19080,265,93,3
+"Hydrogen","Technology-related","anticipation=6","month",0.0799,0.0733,0.276,12.064,0.441,"ES-joint",19080,265,93,6
+"Hydrogen","Cross-border EU","anticipation=6","month",0.0939,0.0679,0.167,13.749,0.317,"ES-joint",19080,265,93,6
+"Hydrogen","Cross-sector","anticipation=6","month",0.0437,0.0734,0.552,12.936,0.374,"ES-joint",19080,265,93,6

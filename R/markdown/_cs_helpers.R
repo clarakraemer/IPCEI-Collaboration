@@ -60,6 +60,11 @@ load_cs <- function(path) {
     n <- paste0("log_collabs_international_", tech)
     if (all(c(e, n) %in% names(df)))
       df[[paste0("log_rel_geo_", tech)]] <- df[[e]] - df[[n]]
+    # Sectoral contrast, same logic on the mutually exclusive NACE-1 pair.
+    x <- paste0("log_collabs_crosssector_n1_", tech)
+    s <- paste0("log_collabs_samesector_n1_", tech)
+    if (all(c(x, s) %in% names(df)))
+      df[[paste0("log_rel_sector_", tech)]] <- df[[x]] - df[[s]]
   }
   df
 }
@@ -146,6 +151,176 @@ sample_stats <- function(df, yname) {
     stringsAsFactors = FALSE
   )
 }
+
+# --- Design-based power simulation -------------------------------------------
+# What it answers: if the true ATT on this outcome were `att_true`, how often
+# would THIS design -- these treated firms, these cohort sizes and approval
+# dates, these matched controls, this estimator -- reject the null at `alpha`?
+#
+# Design (rewritten Nov 2026; see the note below for what it replaces):
+#  1. Impose the null on the real sample. The estimated effect `att_hat` is
+#     subtracted from the treated firms' post-approval observations, so the
+#     data carry no average effect while keeping every firm's actual level and
+#     volatility.
+#  2. Add the hypothesised effect `att_true` over the same post-period. The net
+#     shift is (att_true - att_hat).
+#  3. Draw sampling variation by resampling FIRMS with replacement: treated
+#     firms within their own cohort, so cohort sizes and approval dates are held
+#     at their real values, and controls from the matched control pool. Each
+#     drawn copy becomes its own unit, so a firm sampled twice contributes two
+#     independent units exactly as in a cluster bootstrap.
+#  4. Re-estimate the C&S overall ATT per draw with the SAME inference the paper
+#     reports -- the multiplier bootstrap, not the analytic influence function.
+#     `biters_sim` trades precision for runtime; the reported tables use 9,999.
+#
+# WHAT THIS REPLACES, AND WHY (do not revert without reading this).
+# The previous version built synthetic treated firms by DRAFTING THEM FROM THE
+# MATCHED CONTROLS. That overstated power in every cell, by 1.07x on hydrogen
+# non-funded up to 4.5x on battery EU-internal, because a control firm is not
+# exchangeable with a treated firm on a technology-tagged outcome: controls are
+# 96-99% zeros there (battery EU-internal sd(log1p) 0.097 against 0.430 for the
+# treated), so a constant added to a near-degenerate series is detected almost
+# surely. The measured variance ratio tracked the measured bias in the minimum
+# detectable effect almost exactly (4.42 against 4.50 on battery EU-internal,
+# 2.11 against 2.12 on hydrogen national). It also used `bstrap = FALSE`, which
+# on its own cost a further ~1.7x at battery's 29 clusters. The result was
+# self-contradicting: the simulation claimed to detect a 5% effect on battery
+# EU-internal while the observed 11% effect on that outcome has p = 0.144.
+# Resampling the REAL treated firms fixes the first cause by construction, since
+# the placebo population is then the treated population; `bstrap = TRUE` fixes
+# the second. Validate with the size check below, never by eye.
+#
+# SIZE CHECK. At att_true = att_hat the net shift is zero and the rejection rate
+# must come out near `alpha`. The run chunks therefore prepend 0 to the effect
+# grid. A size far from 0.05 means the design is broken again, and it is the one
+# diagnostic that would have caught the version this replaces. `mde_at` ignores
+# the zero row.
+#
+# Other properties kept from the previous version:
+#  * `control_group` has NO default. The simulation must mirror the estimator it
+#    defends. An earlier inline copy in 07 hard-coded "notyettreated" while every
+#    reported estimate uses never-treated controls (cg_for()); for staggered
+#    hydrogen that is a different design.
+#  * the seed is derived from (outcome, label, effect size), so each cell is
+#    reproducible and independent of how many simulations ran before it.
+#  * returns a one-row data.frame carrying the number of draws that converged,
+#    so a cell that silently failed is visible instead of averaging over NAs.
+#
+# Works for the log1p count outcomes and for the difference-of-logs contrasts
+# alike; for a contrast, `att_true` is a shift in the log DIFFERENCE, so read
+# the grid in log points rather than as a percentage change.
+run_power_sim <- function(cs_data, outcome_var, att_true, control_group,
+                          n_sims = 200, label = "", alpha = 0.05,
+                          att_hat = 0, biters_sim = 199) {
+  if (!outcome_var %in% names(cs_data)) {
+    cat("  !! power sim:", outcome_var, "not found -- skipping\n")
+    return(NULL)
+  }
+  # Leave the global RNG stream exactly as we found it. run_cs() reseeds before
+  # every att_gt, but aggte()'s multiplier bootstrap does NOT, so its standard
+  # errors depend on the stream position. Without this guard a power run placed
+  # before any reported aggregation would move that outcome's p-value.
+  .old_seed <- if (exists(".Random.seed", envir = .GlobalEnv))
+    get(".Random.seed", envir = .GlobalEnv) else NULL
+  on.exit({
+    if (!is.null(.old_seed))
+      assign(".Random.seed", .old_seed, envir = .GlobalEnv)
+  }, add = TRUE)
+
+  set.seed(1000L + sum(utf8ToInt(paste0(outcome_var, label))) +
+             as.integer(round(att_true * 1e4)))
+  crit <- qnorm(1 - alpha / 2)
+
+  # Keep only what att_gt needs. Copying a 4-column frame per draw rather than
+  # the full panel is most of the runtime difference at 500 draws.
+  keep <- c("Linkedin_name", "period", outcome_var)
+  base_trt <- cs_data[cs_data$is_treated == 1, keep, drop = FALSE]
+  base_ctl <- cs_data[cs_data$is_control == 1, keep, drop = FALSE]
+  if (!nrow(base_trt) || !nrow(base_ctl)) {
+    cat("  !! power sim:", outcome_var, "has no treated or no control rows\n")
+    return(NULL)
+  }
+
+  # Real cohort structure: which treated firms were approved in which period.
+  trt_firms <- unique(cs_data[cs_data$is_treated == 1,
+                              c("Linkedin_name", "g_period")])
+  cohorts   <- split(trt_firms$Linkedin_name, trt_firms$g_period)
+  ctl_firms <- unique(base_ctl$Linkedin_name)
+
+  # Row indices per firm, computed once. Drawing a firm is then an index lookup.
+  rows_trt <- split(seq_len(nrow(base_trt)), base_trt$Linkedin_name)
+  rows_ctl <- split(seq_len(nrow(base_ctl)), base_ctl$Linkedin_name)
+
+  net_shift <- att_true - att_hat
+  results   <- rep(NA_integer_, n_sims)
+
+  for (i in seq_len(n_sims)) {
+    # Treated: resample within cohort, so cohort sizes and approval dates hold.
+    trt_draw <- unlist(lapply(cohorts, function(f)
+      sample(f, length(f), replace = TRUE)), use.names = FALSE)
+    g_draw   <- rep(as.numeric(names(cohorts)), lengths(cohorts))
+    ctl_draw <- sample(ctl_firms, length(ctl_firms), replace = TRUE)
+
+    it <- rows_trt[trt_draw]
+    ic <- rows_ctl[ctl_draw]
+    n_t <- lengths(it)
+    n_c <- lengths(ic)
+
+    sim_data <- rbind(base_trt[unlist(it, use.names = FALSE), , drop = FALSE],
+                      base_ctl[unlist(ic, use.names = FALSE), , drop = FALSE])
+    # Every drawn copy is its own unit, so a firm sampled twice enters twice.
+    sim_data$firm_id_sim  <- rep(seq_len(length(it) + length(ic)), c(n_t, n_c))
+    sim_data$g_period_sim <- rep(c(g_draw, rep(0, length(ic))), c(n_t, n_c))
+
+    post <- sim_data$g_period_sim > 0 &
+      sim_data$period >= sim_data$g_period_sim
+    sim_data$outcome_sim <- sim_data[[outcome_var]] + net_shift * as.integer(post)
+
+    results[i] <- tryCatch({
+      cs_sim <- att_gt(
+        yname = "outcome_sim", tname = "period", idname = "firm_id_sim",
+        gname = "g_period_sim", control_group = control_group,
+        anticipation = 0, bstrap = TRUE, biters = biters_sim, cband = FALSE,
+        panel = TRUE, print_details = FALSE, data = sim_data)
+      agg <- aggte(cs_sim, type = "simple", bstrap = TRUE,
+                   biters = biters_sim, cband = FALSE)
+      if (!is.finite(agg$overall.se) || agg$overall.se <= 0) NA_integer_
+      else as.integer(abs(agg$overall.att / agg$overall.se) > crit)
+    }, error = function(e) NA_integer_)
+  }
+
+  data.frame(
+    att_log  = att_true,
+    att_pct  = round((exp(att_true) - 1) * 100, 1),
+    power    = mean(results, na.rm = TRUE),
+    n_draws  = sum(!is.na(results)),
+    n_sims   = n_sims,
+    att_hat  = att_hat,
+    stringsAsFactors = FALSE
+  )
+}
+
+# Minimum detectable effect: the effect size at which a simulated power curve
+# first reaches `target`, linearly interpolated between the two bracketing grid
+# points. With a finite number of draws the curve is not guaranteed monotone, so
+# the convention is the FIRST crossing. NA when the curve never reaches target
+# on the grid, which is itself the finding ("not powered over the range tested").
+mde_at <- function(effect, power, target = 0.80) {
+  ok <- is.finite(effect) & is.finite(power)
+  effect <- effect[ok]; power <- power[ok]
+  if (!length(effect)) return(NA_real_)
+  o <- order(effect); effect <- effect[o]; power <- power[o]
+  if (max(power) < target) return(NA_real_)
+  if (power[1] >= target)  return(effect[1])
+  i <- which(power >= target)[1]
+  effect[i - 1] + (target - power[i - 1]) *
+    (effect[i] - effect[i - 1]) / (power[i] - power[i - 1])
+}
+
+# Standard effect grid for every power run in the project, so the three CSVs
+# (intensity, composition, contrasts) stack into one figure.
+POWER_PCT_GRID <- c(5, 10, 15, 20, 30, 40)
+POWER_LOG_GRID <- log(1 + POWER_PCT_GRID / 100)
 
 make_att_row_std <- function(agg_obj, technology, outcome, type,
                              cs_out = NULL, df = NULL, yname = NULL) {
@@ -244,7 +419,9 @@ outcome_map <- list(
   rel_tech           = c(battery = "log_rel_tech_battery",
                          hydrogen = "log_rel_tech_hydrogen"),
   rel_geo            = c(battery = "log_rel_geo_battery",
-                         hydrogen = "log_rel_geo_hydrogen")
+                         hydrogen = "log_rel_geo_hydrogen"),
+  rel_sector         = c(battery = "log_rel_sector_battery",
+                         hydrogen = "log_rel_sector_hydrogen")
 )
 
 # Analytic classification for the att table Type column (matches the PSM tables,
@@ -267,7 +444,8 @@ outcome_type <- c(
   cl_crosssector_n1  = "Primary",
   cl_samesector_n1   = "Benchmark",
   rel_tech           = "Contrast",
-  rel_geo            = "Contrast"
+  rel_geo            = "Contrast",
+  rel_sector         = "Contrast"
 )
 
 # Pretty labels for the att table Outcome column (match the PSM tables).
@@ -290,5 +468,6 @@ outcome_labels <- c(
   # Secondary contrasts. Labelled so any script that loops over outcome_map
   # finds a label; outcome_type below gives them their own class.
   rel_tech           = "Relative technology (log diff)",
-  rel_geo            = "Relative geography (log diff)"
+  rel_geo            = "Relative geography (log diff)",
+  rel_sector         = "Relative sector (log diff)"
 )

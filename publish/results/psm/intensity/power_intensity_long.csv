@@ -1,0 +1,15 @@
+"Technology","Outcome","Type","key","yname","Spec","att_log","att_pct","power","n_draws","n_sims","ATT","p_value","significant"
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0,0,0.09,500,500,0.1874,0.253,FALSE
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.048790164169432,5,0.068,500,500,0.1874,0.253,FALSE
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.0953101798043249,10,0.062,500,500,0.1874,0.253,FALSE
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.139761942375159,15,0.11,500,500,0.1874,0.253,FALSE
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.182321556793955,20,0.178,500,500,0.1874,0.253,FALSE
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.262364264467491,30,0.34,500,500,0.1874,0.253,FALSE
+"Battery","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.336472236621213,40,0.66,500,500,0.1874,0.253,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0,0,0.064,500,500,0.0932,0.275,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.048790164169432,5,0.058,500,500,0.0932,0.275,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.0953101798043249,10,0.214,500,500,0.0932,0.275,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.139761942375159,15,0.382,500,500,0.0932,0.275,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.182321556793955,20,0.596,500,500,0.0932,0.275,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.262364264467491,30,0.868,500,500,0.0932,0.275,FALSE
+"Hydrogen","Total collaborations","Benchmark","intensity","log_collabs","Spec 1",0.336472236621213,40,0.976,500,500,0.0932,0.275,FALSE

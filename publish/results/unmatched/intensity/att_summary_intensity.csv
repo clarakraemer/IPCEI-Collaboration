@@ -1,0 +1,5 @@
+"Technology","Outcome","Type","TimeUnit","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated"
+"Battery","Total collabs","Primary","month",0.2265,0.1869,0.225,17.948,0.083,"Wald",362160,5030,30
+"Battery","Total collabs","Selection diagnostic (raw)","month",0.3221,0.1864,0.084,24.839,0.01,"Wald",362160,5030,30
+"Hydrogen","Total collabs","Primary","month",0.1371,0.1042,0.188,1413.538,0,"Wald",367704,5107,107
+"Hydrogen","Total collabs","Selection diagnostic (raw)","month",0.1405,0.0679,0.039,2144.877,0,"Wald",367704,5107,107

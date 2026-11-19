@@ -1,0 +1,7 @@
+"technology","outcome","p_raw","p_bh","sig_raw","sig_bh"
+"Battery","Technology-tagged collaborations",0.009,0.027,"***","**"
+"Battery","EU-internal collaborations",0.144,0.144,"",""
+"Battery","Cross-sector collaborations",0.024,0.036,"**","**"
+"Hydrogen","Technology-tagged collaborations",0.041,0.062,"**","*"
+"Hydrogen","EU-internal collaborations",0.015,0.045,"**","**"
+"Hydrogen","Cross-sector collaborations",0.083,0.083,"*","*"

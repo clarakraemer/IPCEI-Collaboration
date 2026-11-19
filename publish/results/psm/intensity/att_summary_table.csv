@@ -1,0 +1,6 @@
+"Specification","Type","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated"
+"Hydrogen","Primary",0.0932,0.0854,0.275,7.814,0.8,"ES-joint",19080,265,93
+"Battery","Primary",0.1874,0.1638,0.253,10.164,0.516,"Wald",8280,115,29
+"Hydrogen","Larger control group",0.0851,0.0831,0.306,8.235,0.767,"ES-joint",24624,342,91
+"Battery","Larger control group",0.2157,0.1564,0.168,12.001,0.364,"Wald",16128,224,29
+"Hydrogen","Not-yet-treated controls",0.0779,0.0852,0.36,8.167,0.772,"ES-joint",19080,265,93

@@ -1,0 +1,19 @@
+"Technology","Outcome","Type","TimeUnit","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated"
+"Battery","Technology-tagged collaborations","Primary","month",0.2861,0.1048,0.006,23.133,0.017,"Wald",3349008,46514,30
+"Hydrogen","Technology-tagged collaborations","Primary","month",0.1547,0.0738,0.036,16.103,0.187,"ES-joint",3686832,51206,107
+"Battery","Cross-border EU collaborations","Primary","month",0.1729,0.0795,0.03,18.058,0.08,"Wald",3349008,46514,30
+"Hydrogen","Cross-border EU collaborations","Primary","month",0.1808,0.0595,0.002,11.708,0.469,"ES-joint",3686832,51206,107
+"Battery","Cross-sector collaborations","Primary","month",0.2706,0.0977,0.006,25.58,0.007,"Wald",3349008,46514,30
+"Hydrogen","Cross-sector collaborations","Primary","month",0.1142,0.0728,0.117,18.844,0.092,"ES-joint",3686832,51206,107
+"Battery","Cross-sector EU-only collaborations","Primary","month",0.2261,0.0856,0.008,16.6,0.12,"Wald",3349008,46514,30
+"Hydrogen","Cross-sector EU-only collaborations","Primary","month",0.1317,0.0686,0.055,17.922,0.118,"ES-joint",3686832,51206,107
+"Battery","Non-EU collaborations","Placebo","month",0.2247,0.089,0.012,21.755,0.026,"Wald",3349008,46514,30
+"Hydrogen","Non-EU collaborations","Placebo","month",0.1614,0.0574,0.005,18.245,0.108,"ES-joint",3686832,51206,107
+"Battery","Domestic collaborations","Placebo","month",0.1745,0.0526,0.001,28.332,0.003,"Wald",3349008,46514,30
+"Hydrogen","Domestic collaborations","Placebo","month",0.0791,0.0629,0.209,18.946,0.09,"ES-joint",3686832,51206,107
+"Battery","Within-sector collaborations","Placebo","month",0.1171,0.05,0.019,24.419,0.011,"Wald",3349008,46514,30
+"Hydrogen","Within-sector collaborations","Placebo","month",0.0919,0.0548,0.094,39.868,0,"ES-joint",3686832,51206,107
+"Battery","Cross-sector collaborations (NACE-1)","Robustness (NACE-1)","month",0.1853,0.0745,0.013,16.292,0.131,"Wald",3349008,46514,30
+"Hydrogen","Cross-sector collaborations (NACE-1)","Robustness (NACE-1)","month",0.1135,0.0666,0.088,19.272,0.082,"ES-joint",3686832,51206,107
+"Battery","Consortium size (mean firms/collab)","Mechanism","month",1.361,0.464,0.003,23.166,0.017,"Wald",3349008,46514,30
+"Hydrogen","Consortium size (mean firms/collab)","Mechanism","month",0.4881,0.3488,0.162,22.702,0.03,"ES-joint",3686832,51206,107

@@ -1,0 +1,11 @@
+Activity,Technology,pre,post,delta
+R&D,Battery,24.7,30.5,5.9
+Demonstration / pilot,Battery,4.1,4.7,0.6
+Production / manufacturing,Battery,30.1,39.9,9.8
+Commercialisation,Battery,5.5,3.4,-2.1
+Adoption / deployment,Battery,13.7,8.4,-5.3
+R&D,Hydrogen,19.2,18.9,-0.3
+Demonstration / pilot,Hydrogen,17.5,18.1,0.6
+Production / manufacturing,Hydrogen,10.4,11.3,0.9
+Commercialisation,Hydrogen,2.5,2.7,0.2
+Adoption / deployment,Hydrogen,47.0,42.8,-4.2

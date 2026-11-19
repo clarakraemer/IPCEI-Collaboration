@@ -24,6 +24,10 @@ venv/
 # ===============================
 .idea/
 .DS_Store
+# Machine-local Claude Code permission allowlist: hundreds of lines of local
+# shell commands and /tmp paths, of no use to anyone cloning the repo. Takes
+# effect only once untracked (git rm --cached).
+.claude/settings.local.json
 
 # ===============================
 # PROJECT RULES — data + outputs stay out, both sides
@@ -39,6 +43,19 @@ R/results/
 *.log
 
 # ===============================
+# Never commit, wherever it ends up
+# ===============================
+# The pseudonym crosswalk maps firm_0001 back to real LinkedIn slugs. It is
+# written to R/data/ (already ignored); this is belt-and-braces in case it is
+# ever moved or copied.
+*_PRIVATE.csv
+
+# NOTE: publish/ is deliberately NOT ignored. It is the public replication
+# bundle, rebuilt by `python -m ipcei_spillovers.publish`, and it is the only
+# data in the repo. Everything in it has been through the identifier check in
+# that script.
+
+# ===============================
 # R / RStudio session cruft
 # ===============================
 .Rhistory
@@ -46,3 +63,11 @@ R/results/
 .RDataTmp
 .Rproj.user/
 _tmp_*.R
+
+# ===============================
+# Knit output — regenerable from the .Rmd, so it does not belong in the repo
+# (it was ~7 MB, about 40% of the tracked tree). Untrack what is already in
+# with: git rm -r --cached R/markdown/*.html R/markdown/*.tex
+# ===============================
+R/markdown/*.html
+R/markdown/*.tex

@@ -106,8 +106,13 @@ def _write(path: Path, text: str):
 def build_results_main():
     tt  = pd.read_csv(PSM_TT / "att_techtagged_table.csv")
     it  = pd.read_csv(PSM_INT / "att_summary_intensity.csv")
-    co  = pd.read_csv(PSM_TT / "consortium_size_att.csv")
-    d = {(r.Technology, r.Outcome): r for r in pd.concat([tt, it, co]).itertuples()}
+    # consortium_size_att.csv used to be concatenated in here for a Panel C on
+    # consortium size. That panel was dropped (RUN_CONSORTIUM <- FALSE: neither
+    # the zero-filled nor the active-months-only version is identified), so none
+    # of the row() calls below ever looked it up. The read was left behind and
+    # made Table 1 depend on a file it does not use, which would have crashed
+    # the build if that CSV were ever cleaned away. Removed Nov 2026.
+    d = {(r.Technology, r.Outcome): r for r in pd.concat([tt, it]).itertuples()}
 
     # Layout: tabular* at \linewidth with \extracolsep{\fill}; an empty spacer
     # column (GAP) sits between the battery and hydrogen blocks so the two
@@ -162,7 +167,7 @@ def build_results_main():
 \begin{{tablenotes}}[flushleft]
 \setlength{{\itemsep}}{{2pt}}
 \small
-\item \textit{{Notes:}} Callaway--Sant'Anna staggered difference-in-differences estimator \citep{{callaway2021difference}} (\texttt{{did}} v2.3.0) on the matched sample, with never-treated controls in both technologies. Battery: $N={nbt}$ (${tbt}$ treated); hydrogen: $N={nht}$ (${tht}$ treated). Standard errors are clustered at the firm level with $9{{,}}999$ bootstrap replications. Panel~A and~B outcomes are monthly collaboration counts in $\log(1+y)$; $\%\Delta = 100[\exp(\widehat{{ATT}})-1]$ is the approx. percentage change in $1+y$. Geographic and sectoral outcomes classify each collaboration from the headquarters countries and NACE-1 sectors of all its participants, so national and cross-border, and same-sector and cross-sector, are mutually exclusive pairs; cross-border splits into EU-internal, where every participant is in the EU, and international otherwise. Technology-related and technology-unrelated outcomes can overlap with these. \textit{{Italicised}} estimates fail the joint pre-trend test.
+\item \textit{{Notes:}} Callaway--Sant'Anna estimator \citep{{callaway2021difference}} (\texttt{{did}} v2.3.0) on the matched sample with never-treated controls. Battery $N={nbt}$ ({tbt} treated); hydrogen $N={nht}$ ({tht} treated). Standard errors clustered at the firm level, $9{{,}}999$ bootstrap replications. Outcomes are monthly collaboration counts in $\log(1+y)$; $\%\Delta = 100[\exp(\widehat{{ATT}})-1]$. Geographic and sectoral outcomes are classified from all participants of a collaboration, so national and cross-border, and same-sector and cross-sector, are mutually exclusive pairs; cross-border splits into EU-internal and international. \textit{{Italicised}} estimates fail the joint pre-trend test.
 \item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
 \end{{tablenotes}}
 \end{{threeparttable}}
@@ -174,6 +179,20 @@ def build_results_main():
 # ---------- Table 4: robustness (tab_results_appendix) ------------------------
 def build_results_appendix():
     rb = pd.read_csv(PSM_TT / "robustness_techtagged_table.csv")
+    # Total collaborations is estimated in the intensity script, not the
+    # composition one, so it was missing from panels A and B while panel C
+    # carried it. Fold it in, so every panel reports the same rows as Table 1.
+    # NB: in att_summary_table.csv "Specification" holds the technology and
+    # "Type" holds the robustness arm.
+    ti = (pd.read_csv(PSM_INT / "att_summary_table.csv")
+            .rename(columns={"Specification": "Technology"}))
+    ti["Outcome"] = "Total collabs"
+    rb = pd.concat(
+        [rb, ti.loc[ti["Type"] != "Primary",
+                    ["Technology", "Outcome", "Type", "ATT", "SE",
+                     "p_value", "N_units"]]],
+        ignore_index=True)
+
     def _nu(typ, tech):
         s = rb[(rb["Type"] == typ) & (rb["Technology"] == tech)]
         return str(int(s["N_units"].iloc[0])) if len(s) else "---"
@@ -226,7 +245,21 @@ def build_results_appendix():
     ut = pd.read_csv(UNM_TT / "att_techtagged_table.csv")
     ui = pd.read_csv(UNM_INT / "att_summary_intensity.csv")
     ui = ui[ui["Type"] == "Primary"]                      # DR total (not the raw diagnostic)
-    du = {(r.Technology, r.Outcome): r for r in pd.concat([ut, ui]).itertuples()}
+    # The unmatched run still writes the legacy dyad-level NACE-2 estimate under
+    # the SAME label as the reported collaboration-level NACE-1 one
+    # ("Cross-sector collaborations"), so (Technology, Outcome) is not unique.
+    # The reported block is written last by the R script, hence keep="last" --
+    # but that is an ordering assumption, so say out loud what was dropped. If
+    # this ever prints an unexpected label, Panel C has silently changed
+    # definition and the R spec is what to check.
+    _uall = pd.concat([ut, ui])
+    _dups = _uall[_uall.duplicated(subset=["Technology", "Outcome"], keep="last")]
+    if len(_dups):
+        print("  appendix panel C: superseded duplicates dropped -> "
+              + ", ".join(sorted({f"{r.Technology}/{r.Outcome}"
+                                  for r in _dups.itertuples()})))
+    _uall = _uall.drop_duplicates(subset=["Technology", "Outcome"], keep="last")
+    du = {(r.Technology, r.Outcome): r for r in _uall.itertuples()}
     ND = f'{int(ut[ut["Technology"]=="Battery"]["N_units"].iloc[0])}/{int(ut[ut["Technology"]=="Hydrogen"]["N_units"].iloc[0])}'
 
 
@@ -243,13 +276,14 @@ def build_results_appendix():
             blocks.append(" & ".join([a, f"{float(r.SE):.3f}", pstr(r.p_value)]))
         return f"\\quad {lab} & {ND} & " + " & & ".join(blocks) + r" \\"
 
-    dpanel = "\n".join(urow(lab, oc) for lab, oc in [
-        ("Technology-related", "Technology-tagged collaborations"),
-        ("EU-internal", "EU-internal collaborations"),
-        ("Cross-sector", "Cross-sector collaborations"),
-        ("Total collaborations", "Total collabs"),
-        ("Cross-border", "Cross-border collaborations"),
-        ("International", "International collaborations")])
+    # Same row set and same order as panels A and B, which is the order of
+    # Table 1. The hardcoded six-row list this replaces silently omitted
+    # technology-unrelated, national and same-sector, although the unmatched
+    # run estimates all three, so panel C could not be read down a column
+    # against the panels above it.
+    dpanel = "\n".join(
+        urow(label_map[oc], oc) for oc in order
+        if ("Battery", oc) in du or ("Hydrogen", oc) in du)
 
     tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
 \begin{{table}}[!ht]
@@ -277,7 +311,7 @@ def build_results_appendix():
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Robustness checks for the outcomes in {MAIN_RESULTS_REF}; ATT, SE and $p$ as defined there. $N$ is the number of firms (battery/hydrogen). Panel~A uses the larger-control-group matching specification. Panel~B substitutes not-yet-treated for never-treated controls, for hydrogen only, since the single battery cohort has no not-yet-treated units. Panel~C drops matching, estimating on all structurally eligible controls with doubly-robust covariate adjustment; \textit{{italicised}} estimates fail the joint pre-trend test.
+\item \textit{{Notes:}} Robustness checks for the outcomes in {MAIN_RESULTS_REF}; ATT, SE and $p$ as defined there. $N$ is the number of firms (battery/hydrogen). Panel~A uses the larger-control-group matching specification. Panel~B substitutes not-yet-treated for never-treated controls, for hydrogen only, since the single battery cohort has no not-yet-treated units. Panel~C drops matching and estimates on all eligible controls with doubly robust adjustment. \textit{{Italicised}} estimates fail the joint pre-trend test.
 \item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
 \end{{tablenotes}}
 \end{{threeparttable}}
@@ -340,7 +374,7 @@ def build_results_pretrend():
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} $p$-values of the joint test that all pre-treatment event-study coefficients are zero, for the outcomes in {MAIN_RESULTS_REF}. \textit{{Matched}} is the primary specification (matched sample, never-treated controls); \textit{{unmatched}} estimates on all structurally eligible controls with doubly-robust covariate adjustment (Table~\ref{{tab:robustness}}, Panel~C). Values below 0.05 (in \textbf{{bold}}) reject parallel pre-treatment trends.
+\item \textit{{Notes:}} $p$-values of the joint test that all pre-treatment event-study coefficients are zero, for the outcomes in {MAIN_RESULTS_REF}. \textit{{Matched}} is the primary specification; \textit{{unmatched}} estimates on all eligible controls with doubly robust adjustment (Table~\ref{{tab:robustness}}, Panel~C). Values below 0.05 (in \textbf{{bold}}) reject parallel pre-treatment trends.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
@@ -389,7 +423,7 @@ Activity & Before & After & $\Delta$ & Control $\Delta$
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Share (\%) of IPCEI firms' technology-related collaborations carrying each activity tag, in the 12 months before approval (months $-12$ to $-1$) and from approval onward (months $0$ to $12$). $\Delta$ is the change in percentage points; \textit{{control}} $\Delta$ is the same change for the matched control firms, measured around the approval date of the treated firm they are matched to, and serves as a benchmark for secular trends. Activity tags are not mutually exclusive, so each column reports prevalence and does not sum to 100\%.
+\item \textit{{Notes:}} Share (\%) of IPCEI firms' technology-related collaborations carrying each activity tag, months $-12$ to $-1$ and $0$ to $12$ relative to approval. $\Delta$ is the change in percentage points; \textit{{control}} $\Delta$ is the same change for matched controls around their treated firm's approval date. Tags are not mutually exclusive, so columns do not sum to 100\%.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
@@ -573,7 +607,7 @@ Category & $N$ & \% & & Category & $N$ & \% \\
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Counts at the collaboration level within the {start}--{end} analysis window ($N = {str(f'{n_total:,}').replace(',', '{{,}}')}$ unique collaborations). A collaboration is assigned to a category if any of its constituent organisation pairs carries the corresponding tag. Categories are not mutually exclusive, since a collaboration can span several technologies, activity types and domains, so shares within a panel do not sum to 100\%. Technology and activity tags are those of \citet{{ToetzkeEtAl2025}}; activity type describes the purpose of the collaboration and activity domain the part of the value chain it concerns.
+\item \textit{{Notes:}} Counts at the collaboration level, {start}--{end} ($N = {str(f'{n_total:,}').replace(',', '{{,}}')}$). A collaboration is assigned to a category if any constituent organisation pair carries the tag. Categories are not mutually exclusive, so shares within a panel do not sum to 100\%. Tags follow \citet{{ToetzkeEtAl2025}}; activity type is the purpose of the collaboration, activity domain the part of the value chain.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
@@ -589,8 +623,16 @@ def build_descriptive_attrition():
     fm = load_df("interim", "combined",
                  "firm_master_ipcei_corrected_extended_jan26.csv", low_memory=False)
     rows = []
+    n_pre = {}
     for tech in ("battery", "hydrogen"):
-        tr = set(fm.loc[fm[f"first_{tech}_date"].notna(), "Linkedin_name"])
+        # Only firms whose approval falls inside the panel window can be matched
+        # at all. The 17 battery firms approved in December 2019 are excluded
+        # before matching because the collaboration data start in 2020; counting
+        # them as "lost" reported battery attrition as 29 of 47 instead of 29 of 30.
+        appr = pd.to_datetime(fm[f"first_{tech}_date"], errors="coerce")
+        in_window = appr.notna() & (appr >= PLOT_START) & (appr < PLOT_END)
+        n_pre[tech] = int((appr.notna() & ~in_window).sum())
+        tr = set(fm.loc[in_window, "Linkedin_name"])
         mf = pd.read_csv(R_DATA_DIR / f"{tech}_psm_spec1_matched_firms.csv", low_memory=False)
         matched = set(mf.loc[mf.is_treated == 1, "Linkedin_name"])
         sub = fm[fm.Linkedin_name.isin(tr)].copy()
@@ -629,7 +671,7 @@ def build_descriptive_attrition():
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Treated firms with no comparable control are dropped by the matching procedure. Columns report medians. Attrition is mild for battery, where lost and retained firms are of similar size, age and collaboration activity, and severe for hydrogen, where the lost firms are far larger, older and more collaborative. The estimates in {MAIN_RESULTS_REF} therefore apply to IPCEI firms with observable counterparts rather than to all recipients.
+\item \textit{{Notes:}} Treated firms with no comparable control are dropped by the matching procedure. The sample is firms approved within the observation window; the {n_pre['battery']} battery firms approved in December 2019 are excluded beforehand, since the collaboration data begin in 2020. Entries are medians, except battery \textit{{Lost}}, which is a single firm.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
@@ -661,12 +703,12 @@ def build_results_estimands():
     # log1p row comes from the primary table, so the three estimands are
     # anchored on the published estimate rather than re-estimated.
     pr = {r.Technology: r for r in prim[prim.Outcome == "Technology-tagged collaborations"].itertuples()}
-    rows.append(r"\quad Log $(1+y)$, as in " + MAIN_RESULTS_REF + "\n  & "
+    rows.append(r"\quad Log $(1+y)$, the reported specification" + "\n  & "
                 + " & & ".join(cell(pr[t].ATT, pr[t].SE, pr[t].p_value)
                                for t in ("Battery", "Hydrogen")) + r" \\")
-    for lab, oc in [("Any collaboration (extensive margin)",
+    for lab, oc in [("Any collaboration, extensive margin",
                      "Technology-related (any collaboration)"),
-                    ("Raw count (collaborations per firm-month)",
+                    ("Raw count per firm-month",
                      "Technology-related (raw count)")]:
         sub = d[(d.outcome == oc) & (d.anticipation == 0)]
         if len(sub) != 2:
@@ -679,13 +721,13 @@ def build_results_estimands():
     tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
 \begin{{table}}[!ht]
 \centering
-\setlength{{\tabcolsep}}{{5pt}}
+\setlength{{\tabcolsep}}{{4pt}}
 \renewcommand{{\arraystretch}}{{1.15}}
-\caption{{Complementary estimands for technology-related collaboration}}
+\caption{{Technology-related collaboration under three outcome definitions}}
 \label{{tab:estimands}}
 \begin{{threeparttable}}
 \small
-\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rrl c rrl @{{}}}}
+\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rrr c rrr @{{}}}}
 \toprule\toprule
 & \multicolumn{{3}}{{c}}{{\textbf{{Battery IPCEI}}}}
 & & \multicolumn{{3}}{{c}}{{\textbf{{Hydrogen IPCEI}}}} \\
@@ -697,7 +739,7 @@ def build_results_estimands():
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Same matched samples, cohorts and controls as {MAIN_RESULTS_REF}. The rows are different estimands and are not expressed in a common unit. The extensive-margin row estimates the effect on the probability that a firm records any technology-related collaboration in a month. The raw-count row is a level effect in collaborations per firm-month; it is not converted into a percentage, since dividing it by a pre-treatment mean would not identify a proportional effect. All rows are secondary analyses with nominal $p$-values.
+\item \textit{{Notes:}} Rows are different estimands on the same matched samples, cohorts and controls, and are not comparable in size. Row~1 is the estimate in {MAIN_RESULTS_REF}; row~2 replaces the outcome by an indicator for any technology-related collaboration in the month; row~3 uses the untransformed count, a level effect that is not converted into a percentage. Secondary analyses with nominal $p$-values.
 \item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
 \end{{tablenotes}}
 \end{{threeparttable}}
@@ -719,16 +761,18 @@ def build_results_cohort_country():
     coh = sorted(a.cohort.unique())
     nde = pd.read_csv(DIAG_R / "p2c_within_cohort_support.csv")
     nmap = {r.cohort: (int(r.DE), int(r.non_DE)) for r in nde.itertuples()}
-    rows = [r"\multicolumn{8}{l}{\textbf{A. Cohort-specific effects, months 0--12}} \\[2pt]"]
+
+    # Six columns, not nine. The earlier version carried a separate p column per
+    # outcome and overflowed the text block by ~106pt; significance now rides on
+    # the stars and the exact p-values stay in the result CSVs.
+    rows = [r"\multicolumn{6}{l}{\textbf{A. Cohort-specific effects, months 0--12}} \\[2pt]"]
     for c in coh:
         de, non = nmap.get(c, (0, 0))
-        cells = []
-        for oc in outs:
-            r = a[(a.cohort == c) & (a.outcome == oc)]
-            cells.append(f"{float(r.att.iloc[0]):.3f}{sym(float(r.p.iloc[0]))} & {pstr(r.p.iloc[0])}"
-                         if len(r) else "--- & ---")
+        cells = [(f"{float(r.att.iloc[0]):.3f}{sym(float(r.p.iloc[0]))}" if len(r) else "---")
+                 for oc in outs
+                 for r in [a[(a.cohort == c) & (a.outcome == oc)]]]
         rows.append(rf"\quad {c} & {de + non} & {de} & " + " & ".join(cells) + r" \\")
-    rows.append(r"\multicolumn{8}{l}{\textbf{B. Excluding German firms}} \\[2pt]")
+    rows.append(r"\multicolumn{6}{l}{\textbf{B. Excluding German firms}} \\[2pt]")
     lab = {"full": "Full matched sample",
            "drop DE treated": "Excluding German treated firms",
            "drop all DE firms": "Excluding all German firms"}
@@ -737,11 +781,9 @@ def build_results_cohort_country():
         if sub.empty:
             continue
         nt = int(sub.n_treated.iloc[0])
-        cells = []
-        for oc in outs:
-            r = sub[sub.outcome == oc]
-            cells.append(f"{float(r.att.iloc[0]):.3f}{sym(float(r.p.iloc[0]))} & {pstr(r.p.iloc[0])}"
-                         if len(r) else "--- & ---")
+        cells = [(f"{float(r.att.iloc[0]):.3f}{sym(float(r.p.iloc[0]))}" if len(r) else "---")
+                 for oc in outs
+                 for r in [sub[sub.outcome == oc]]]
         rows.append(rf"\quad {l} & {nt} & --- & " + " & ".join(cells) + r" \\")
     body = "\n".join(rows)
     tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
@@ -749,23 +791,23 @@ def build_results_cohort_country():
 \centering
 \setlength{{\tabcolsep}}{{4pt}}
 \renewcommand{{\arraystretch}}{{1.15}}
-\caption{{Hydrogen cohort effects and sensitivity to German participation}}
+\caption{{Hydrogen effects by approval cohort and in samples excluding German firms}}
 \label{{tab:cohort_country}}
 \begin{{threeparttable}}
 \small
-\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rr rl rl rl @{{}}}}
+\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rr rrr @{{}}}}
 \toprule\toprule
-& & & \multicolumn{{2}}{{c}}{{Technology-related}} & \multicolumn{{2}}{{c}}{{Cross-border EU}}
-& \multicolumn{{2}}{{c}}{{Technology-unrelated}} \\
-\cmidrule(lr){{4-5}}\cmidrule(lr){{6-7}}\cmidrule(lr){{8-9}}
-& Treated & German & ATT & $p$ & ATT & $p$ & ATT & $p$ \\
+& \multicolumn{{2}}{{c}}{{Treated firms}} & \multicolumn{{3}}{{c}}{{ATT}} \\
+\cmidrule(lr){{2-3}}\cmidrule(lr){{4-6}}
+& Total & German & \textit{{Technology-}} & \textit{{Cross-border}} & \textit{{Technology-}} \\[-2pt]
+& & & \textit{{related}} & \textit{{EU}} & \textit{{unrelated}} \\
 \midrule
 {body}
 \bottomrule\bottomrule
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Hydrogen only. Panel~A reports cohort-specific effects from \texttt{{aggte(type = "group")}} over the common 0--12 month horizon, with the number of treated firms and how many are headquartered in Germany. Panel~B re-estimates the overall effect on reduced samples; no control firm is matched exclusively to German treated firms, so excluding German treated firms leaves the control population unchanged. Point estimates in Panel~B are similar across samples while standard errors rise as the treated sample falls from 93 to 66 firms, so a loss of significance reflects precision rather than a German-specific effect.
+\item \textit{{Notes:}} Hydrogen only. Panel~A reports cohort-specific effects from \texttt{{aggte(type = "group")}} over the common 0--12 month horizon, with the number of treated firms and the number headquartered in Germany. Panel~B re-estimates the overall effect on samples excluding German firms; no control firm is matched exclusively to a German treated firm. Stars mark significance; exact $p$-values are in the replication files.
 \item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
 \end{{tablenotes}}
 \end{{threeparttable}}
@@ -783,17 +825,31 @@ def build_results_reference_period():
     r1 = pd.read_csv(f1); r3 = pd.read_csv(f3)
     outs = ["Technology-related", "Cross-border EU", "Technology-unrelated"]
 
-    rows = [r"\multicolumn{6}{l}{\textbf{A. Cohort decomposition of the reference-period change}} \\[2pt]",
+    rows = [r"\multicolumn{6}{l}{\textbf{A. Reference-period sensitivity by cohort}} \\[2pt]",
             r"\quad \textit{Cohort} & \textit{Treated} & \textit{Weight} & "
             r"\textit{Baseline} & \textit{Anticipation 3} & \textit{Difference} \\[1pt]"]
     sub = r1[r1.outcome == "Technology-related"].sort_values("cohort")
     for r in sub.itertuples():
         rows.append(rf"\quad {r.cohort} & {int(r.n_g)} & {r.weight:.3f} & "
                     rf"{r.att0:.3f} & {r.att3:.3f} & {r.gap:+.3f} \\")
-    rows.append(r"\multicolumn{6}{l}{\textbf{B. Event-time split, baseline reference period}} \\[2pt]")
-    rows.append(r"\quad \textit{Window} & & & \textit{Technology-} & \textit{Cross-border} & "
-                r"\textit{Technology-} \\[-2pt]"
-                "\n" r"\quad & & & \textit{related} & \textit{EU} & \textit{unrelated} \\[1pt]")
+    # Overall ATTs and the share of the change carried by the largest cohort,
+    # both computed here so the note cannot drift from the panel.
+    tot0 = float((sub.weight * sub.att0).sum())
+    tot3 = float((sub.weight * sub.att3).sum())
+    chg = tot3 - tot0
+    top = sub.loc[(sub.weight * sub.gap).abs().idxmax()]
+    top_share = round(100 * float(top.weight * top.gap) / chg) if chg else 0
+    top_month = pd.Period(top.cohort, freq="M").strftime("%B %Y")
+    rows.append(r"\addlinespace[2pt]")
+    rows.append(rf"\quad \textit{{Overall}} & {int(sub.n_g.sum())} & 1.000 & \textit{{{tot0:.3f}}} & "
+                rf"\textit{{{tot3:.3f}}} & \textit{{{chg:+.3f}}} \\")
+    # Panel B has no use for the Treated and Weight columns, so its row labels
+    # span the first three columns instead of leaving two cells empty.
+    rows.append(r"\multicolumn{6}{l}{\textbf{B. Effects by event-time window}} \\[2pt]")
+    rows.append(r"\multicolumn{3}{l}{\quad \textit{Window}} & \textit{Technology-} & "
+                r"\textit{Cross-border} & \textit{Technology-} \\[-2pt]"
+                "\n" r"\multicolumn{3}{l}{} & \textit{related} & \textit{EU} & "
+                r"\textit{unrelated} \\[1pt]")
     wl = {"e 0-0": "Approval month", "e 1-3": "Months 1--3",
           "e 4-12": "Months 4--12", "e 1-12": "Months 1--12"}
     for w, l in wl.items():
@@ -801,14 +857,14 @@ def build_results_reference_period():
         for oc in outs:
             s = r3[(r3.window == w) & (r3.outcome == oc)]
             cells.append(f"{float(s.att.iloc[0]):.3f}{sym(float(s.p.iloc[0]))}" if len(s) else "---")
-        rows.append(rf"\quad {l} & \multicolumn{{2}}{{c}}{{}} & " + " & ".join(cells) + r" \\")
+        rows.append(rf"\multicolumn{{3}}{{l}}{{\quad {l}}} & " + " & ".join(cells) + r" \\")
     body = "\n".join(rows)
     tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
 \begin{{table}}[!ht]
 \centering
 \setlength{{\tabcolsep}}{{5pt}}
 \renewcommand{{\arraystretch}}{{1.15}}
-\caption{{Hydrogen reference period and event-time composition}}
+\caption{{Timing of the hydrogen effects on collaboration}}
 \label{{tab:reference_period}}
 \begin{{threeparttable}}
 \small
@@ -822,7 +878,7 @@ def build_results_reference_period():
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Hydrogen only. Panel~A decomposes the change in the overall ATT for technology-related collaboration when the reference period moves from the month before approval to four months before it. The two specifications use the same treated cohorts, the same controls and the same post-approval months; the difference in each cohort equals the change in that cohort's outcome relative to controls between those two reference months. Weights are the cohort shares used by the overall aggregation, which depend on cohort size and on the number of post-approval months observed. Panel~B reports the baseline specification aggregated over event-time windows, with the three columns giving technology-related, cross-border EU and technology-unrelated collaboration. Excluding the approval month does not address the reference-period sensitivity in Panel~A, since both use the same reference month.
+\item \textit{{Notes:}} Hydrogen only. Panel~A gives cohort-level ATTs for technology-related collaboration under two reference periods, the month before approval (\textit{{Baseline}}) and four months before it (\textit{{Anticipation 3}}), holding cohorts, controls and post-approval months fixed. \textit{{Difference}} is the change in a cohort's outcome relative to controls between the two reference months, \textit{{Weight}} its share in the overall aggregation; the {top_month} cohort accounts for {abs(top_share)}\% of the change. Panel~B gives the baseline specification aggregated over event-time windows for three outcomes.
 \item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
 \end{{tablenotes}}
 \end{{threeparttable}}
@@ -858,7 +914,7 @@ Country & Treated (\%) & Control (\%) & Difference (pp) \\
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Share of firms by headquarters country in the primary matched sample, six largest treated shares per technology. Matching conditions on sector and European presence but not on country.
+\item \textit{{Notes:}} Share of firms by headquarters country in the primary matched sample, six largest treated shares per technology. Matching does not condition on country.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
@@ -879,34 +935,52 @@ def build_descriptive_exposure():
     already been approved in that month.
     """
     d = pd.read_csv(DIAG_PY / "p4_control_exposure_corrected.csv")
-    body = "\n".join(
-        f"{r.technology} & {r.n_controls} & "
-        f"{r.ctrl_ever_approved_partner} ({r.share_ever_approved_pct:.1f}\\%) & "
-        f"{r.events_with_approved_partner} / {r.ctrl_events_tech} "
-        f"({r.share_events_approved_pct:.1f}\\%) & "
-        f"{r.share_firm_months_exposed_pct:.2f}\\% & "
-        f"{r.share_events_future_pct:.1f}\\% \\\\" for r in d.itertuples())
+    g = {r.technology: r for r in d.itertuples()}
+
+    def _n(x):
+        """Thousands separator that survives the f-string and LaTeX maths."""
+        return f"{int(x):,}".replace(",", "{,}")
+
+    def row(label, fmt):
+        return rf"\quad {label} & " + " & ".join(fmt(g[t]) for t in ("Battery", "Hydrogen")) + r" \\"
+
+    # Transposed layout: one column per technology. The earlier wide version put
+    # the five quantities in columns and overflowed the text block by ~118pt.
+    body = "\n".join([
+        r"\multicolumn{3}{l}{\textbf{A. Matched control sample}} \\[2pt]",
+        row("Control firms", lambda r: _n(r.n_controls)),
+        row("Control firm-months", lambda r: _n(r.ctrl_firm_months)),
+        row("Technology-related collaborations", lambda r: _n(r.ctrl_events_tech)),
+        r"\multicolumn{3}{l}{\textbf{B. Exposure to an already-approved IPCEI firm}} \\[2pt]",
+        row("Control firms with any such collaboration",
+            lambda r: rf"{_n(r.ctrl_ever_approved_partner)} ({r.share_ever_approved_pct:.1f}\%)"),
+        row("Collaborations with such a partner",
+            lambda r: rf"{_n(r.events_with_approved_partner)} ({r.share_events_approved_pct:.1f}\%)"),
+        row("Control firm-months with such a collaboration",
+            lambda r: rf"{_n(r.ctrl_firm_months_exposed)} ({r.share_firm_months_exposed_pct:.2f}\%)"),
+        r"\multicolumn{3}{l}{\textbf{C. For comparison, not interference}} \\[2pt]",
+        row("Collaborations with a later-approved IPCEI firm",
+            lambda r: rf"{_n(r.events_with_future_treated_partner)} ({r.share_events_future_pct:.1f}\%)"),
+    ])
     tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
 \begin{{table}}[!ht]
 \centering
 \setlength{{\tabcolsep}}{{6pt}}
 \renewcommand{{\arraystretch}}{{1.15}}
-\caption{{Control firms collaborating with IPCEI firms}}
+\caption{{Exposure of control firms to already-approved IPCEI firms}}
 \label{{tab:exposure}}
 \begin{{threeparttable}}
 \small
-\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rrrrr @{{}}}}
+\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rr @{{}}}}
 \toprule\toprule
-& Control & Ever linked to an & Technology-related events & Control firm-months & Events with a
-\\
-& firms & approved IPCEI firm & with an approved partner & exposed & future-treated partner \\
+& Battery & Hydrogen \\
 \midrule
 {body}
 \bottomrule\bottomrule
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} Control firms in the primary matched sample. Exposure is counted at the level of the unique (collaboration, control firm) pair and restricted to collaborations in the funded technology in which at least one other participant was an IPCEI firm of that technology that had already been approved in that month. The final column reports events whose IPCEI partner was approved only later, which is not interference. Under the assumption that approval raises a treated firm's collaboration with its partners, such interference would attenuate the estimates; the direction is not identified without that assumption.
+\item \textit{{Notes:}} Control firms in the primary matched sample. Panel~B counts collaboration with an IPCEI firm in the same technology already approved in that month, as unique (collaboration, control firm) pairs in the funded technology; percentages are shares of the corresponding Panel~A total. Such exposure would bias the estimates towards zero. Panel~C counts collaborations whose IPCEI partner was approved only later.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
@@ -964,12 +1038,259 @@ def build_results_anticipation():
 \end{{tabular*}}
 \begin{{tablenotes}}[flushleft]
 \small
-\item \textit{{Notes:}} $k$ is the number of months before approval treated as already exposed, so $k=0$ is the baseline specification of {MAIN_RESULTS_REF}; point estimates are identical and $p$-values differ only in the third decimal through bootstrap simulation error. A six-month window is not estimable for battery, whose single cohort is approved twelve months after the panel begins. Outcomes are monthly collaboration counts in $\log(1+y)$.
+\item \textit{{Notes:}} $k$ is the number of months before approval treated as already exposed; $k=0$ is the specification of {MAIN_RESULTS_REF}, from which it differs only through bootstrap simulation error. A six-month window is not estimable for battery, whose single cohort is approved twelve months after the panel begins. Outcomes in $\log(1+y)$.
 \end{{tablenotes}}
 \end{{threeparttable}}
 \end{{table}}
 """
     _write(SI_DIR / "tab_results_anticipation.tex", tex)
+
+
+# ---------- SI: direct contrasts between the exclusive pairs ------------------
+CONTRAST_ROWS = [
+    ("Relative technology (log diff)",
+     "Technology-related $-$ technology-unrelated"),
+    ("Relative geography, EU-internal minus international (log diff)",
+     "EU-internal $-$ international"),
+    ("Relative sector, cross-sector minus same-sector (log diff)",
+     "Cross-sector $-$ same-sector"),
+]
+BRIDGE_ROW = ("EU cross-border, broader definition (log diff)",
+              "EU cross-border, broader definition")
+
+
+def build_results_contrasts():
+    """Differences between the mutually exclusive outcome pairs, estimated directly.
+
+    C&S is linear in the outcome, so the ATT on the difference of two log1p
+    outcomes equals the difference of their separately estimated ATTs but
+    carries the correct standard error from the shared influence function.
+    Comparing two ATTs by their significance stars is not a test of their
+    difference; these rows are.
+    """
+    f = DIAG_R / "p5_relative_and_counts.csv"
+    if not f.exists():
+        print("skip tab_results_contrasts: run 10_ck_diagnostics_reference_country.R")
+        return
+    d = pd.read_csv(f)
+    d = d[d.anticipation == 0]
+
+    def row(src, label):
+        sub = {r.technology: r for r in d[d.outcome == src].itertuples()}
+        if len(sub) != 2:
+            print(f"  tab_results_contrasts: no rows for {src!r}, skipping")
+            return None
+        cells = [f"{float(sub[t].att):.3f}{sym(float(sub[t].p))} & "
+                 f"{float(sub[t].se):.3f} & {pstr(sub[t].p)}"
+                 for t in ("Battery", "Hydrogen")]
+        return rf"\quad {label}" + "\n  & " + " & & ".join(cells) + r" \\"
+
+    body = [r"\multicolumn{8}{l}{\textbf{A. Differences between the exclusive pairs}} \\[2pt]"]
+    body += [r for src, lab in CONTRAST_ROWS if (r := row(src, lab))]
+    br = row(*BRIDGE_ROW)
+    if br:
+        body += [r"\multicolumn{8}{l}{\textbf{B. Alternative geographic definition}} \\[2pt]", br]
+    body = "\n".join(body)
+
+    tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
+\begin{{table}}[!ht]
+\centering
+\setlength{{\tabcolsep}}{{4pt}}
+\renewcommand{{\arraystretch}}{{1.15}}
+\caption{{Direct contrasts between the reported outcomes}}
+\label{{tab:contrasts}}
+\begin{{threeparttable}}
+\small
+\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rrr c rrr @{{}}}}
+\toprule\toprule
+& \multicolumn{{3}}{{c}}{{\textbf{{Battery IPCEI}}}}
+& & \multicolumn{{3}}{{c}}{{\textbf{{Hydrogen IPCEI}}}} \\
+\cmidrule(lr){{2-4}}\cmidrule(lr){{6-8}}
+& ATT & SE & $p$ & & ATT & SE & $p$ \\
+\midrule
+{body}
+\bottomrule\bottomrule
+\end{{tabular*}}
+\begin{{tablenotes}}[flushleft]
+\small
+\item \textit{{Notes:}} Panel~A estimates the difference between the two members of each exclusive pair as a single outcome, so the standard error accounts for their covariance; comparing the separate ATTs in {MAIN_RESULTS_REF} by their significance stars does not test their difference. Panel~B reports a broader geographic definition. The EU-internal outcome in {MAIN_RESULTS_REF} counts a collaboration only if every participant is headquartered in the EU, so a collaboration between a German, a French and an American firm is classified as international; roughly a third of collaborations spanning two or more member states fall into that case. The broader outcome instead counts a collaboration whenever the firm has a partner in another member state, whether or not a non-EU participant is also present. It is not exclusive of the international outcome and is reported as a supplementary estimate. All rows are secondary analyses with nominal $p$-values.
+\item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
+\end{{tablenotes}}
+\end{{threeparttable}}
+\end{{table}}
+"""
+    _write(SI_DIR / "tab_results_contrasts.tex", tex)
+
+
+# ---------- SI: multiple testing over the full outcome set --------------------
+def build_results_bh_all():
+    """Benjamini-Hochberg over every composition outcome, not only the three targeted.
+
+    The reported family is the three outcomes the scheme's conditions name.
+    Correcting across all eight composition outcomes instead is the obvious
+    referee question, and it changes the hydrogen conclusion, so it is reported
+    rather than left to be discovered.
+    """
+    f = PSM_TT / "bh_correction_techtagged_alloutcomes.csv"
+    if not f.exists():
+        print("skip tab_results_bh-all:", f, "not found")
+        return
+    d = pd.read_csv(f)
+    order = [o for o in OUTCOME_LABELS if o in set(d.outcome)]
+    lines = []
+    for oc in order:
+        cells = []
+        for tech in ("Battery", "Hydrogen"):
+            r = d[(d.technology == tech) & (d.outcome == oc)]
+            if r.empty:
+                cells.append("--- & ---")
+                continue
+            r = r.iloc[0]
+            cells.append(f"{pstr(r.p_raw)} & {pstr(r.p_bh)}{sym(float(r.p_bh))}")
+        lines.append(rf"\quad {OUTCOME_LABELS[oc]} & " + " & & ".join(cells) + r" \\")
+    body = "\n".join(lines)
+    tex = rf"""% Auto-generated by ipcei_spillovers.tables — do not hand-edit.
+\begin{{table}}[!ht]
+\centering
+\setlength{{\tabcolsep}}{{5pt}}
+\renewcommand{{\arraystretch}}{{1.15}}
+\caption{{Multiple testing over all composition outcomes}}
+\label{{tab:bh_all}}
+\begin{{threeparttable}}
+\small
+\begin{{tabular*}}{{\linewidth}}{{@{{\extracolsep{{\fill}}}} l rr c rr @{{}}}}
+\toprule\toprule
+& \multicolumn{{2}}{{c}}{{\textbf{{Battery IPCEI}}}}
+& & \multicolumn{{2}}{{c}}{{\textbf{{Hydrogen IPCEI}}}} \\
+\cmidrule(lr){{2-3}}\cmidrule(lr){{5-6}}
+& Raw $p$ & Adjusted $p$ & & Raw $p$ & Adjusted $p$ \\
+\midrule
+{body}
+\bottomrule\bottomrule
+\end{{tabular*}}
+\begin{{tablenotes}}[flushleft]
+\small
+\item \textit{{Notes:}} Benjamini--Hochberg correction applied within each technology across all {len(order)} outcomes estimated in the composition specification, rather than across the three outcomes the scheme's conditions name. The three-outcome family is the one reported in the main text, because the conditions define it; this table shows what the broader family gives. Under it the hydrogen technology-related effect no longer reaches conventional significance, while the battery effects and the hydrogen cross-border effect do.
+\item \sym{{*}}~$p<0.10$\quad \sym{{**}}~$p<0.05$\quad \sym{{***}}~$p<0.01$
+\end{{tablenotes}}
+\end{{threeparttable}}
+\end{{table}}
+"""
+    _write(SI_DIR / "tab_results_bh-all.tex", tex)
+
+
+# ---------- NUMBERS_CRIB.md ---------------------------------------------------
+def build_numbers_crib():
+    """Regenerate results/NUMBERS_CRIB.md from the result CSVs.
+
+    The crib used to be maintained by hand and went stale across the
+    collaboration-level rewrite: it still listed dyad-level outcomes that are
+    no longer reported ("Domestic", "Within-sector", "Cross-border non-EU"),
+    a nine-outcome Benjamini-Hochberg family, and battery cross-sector at
+    0.270 against the 0.187 in Table 1 -- while telling the reader that every
+    in-text number must match it. A drafting source that disagrees with the
+    tables is worse than no drafting source, so it is generated now.
+    """
+    tt = pd.read_csv(PSM_TT / "att_techtagged_table.csv")
+    it = pd.read_csv(PSM_INT / "att_summary_intensity.csv")
+    main = pd.concat([tt, it], ignore_index=True)
+
+    def md(s):
+        """LaTeX markup out, plain markdown in: this file is read, not compiled."""
+        return (str(s).replace(r"\sym{", "").replace("}", "")
+                      .replace(r"\%", "%").replace("$", ""))
+
+    def fmt(r):
+        att = md(f"{float(r.ATT):.3f}{sym(_exact_p(r.ATT, r.SE))}")
+        pt = float(r.pretrend_p_value) if pd.notna(r.pretrend_p_value) else float("nan")
+        flag = " **pre-trend FAILS**" if pt < 0.05 else ""
+        return (f"{att} / {md(pct(r.ATT))} / SE {float(r.SE):.3f} / "
+                f"p {float(r.p_value):.3f} / pre {pt:.3f}{flag}")
+
+    lines = [
+        "# Numbers crib",
+        "",
+        "**Generated by `python -m ipcei_spillovers.tables` -- do not hand-edit.**",
+        "Regenerate after any R re-run; a hand-edited crib is how this file went",
+        "stale last time. Every in-text number must match the tables in",
+        "`results/tables/`, which come from the same CSVs as this file.",
+        "",
+        f"PSM balance spec (spec 1) = primary. Battery N = "
+        f"{int(tt[tt.Technology=='Battery'].N_units.iloc[0])} "
+        f"({int(tt[tt.Technology=='Battery'].N_treated.iloc[0])} treated); hydrogen N = "
+        f"{int(tt[tt.Technology=='Hydrogen'].N_units.iloc[0])} "
+        f"({int(tt[tt.Technology=='Hydrogen'].N_treated.iloc[0])} treated). "
+        "Deterministic per-outcome seed, 9,999 bootstrap draws, firm-level clusters.",
+        "",
+        "## Table 1 -- main results (ATT / %D / SE / p / joint pre-trend p)",
+        "",
+        "| Outcome | Battery | Hydrogen |",
+        "|---|---|---|",
+    ]
+    for oc, lab in OUTCOME_LABELS.items():
+        rows = {r.Technology: r for r in main[main.Outcome == oc].itertuples()}
+        if len(rows) != 2:
+            continue
+        lines.append(f"| {lab} | {fmt(rows['Battery'])} | {fmt(rows['Hydrogen'])} |")
+
+    # Benjamini-Hochberg, both families.
+    for fname, title in [("bh_correction_techtagged.csv",
+                          "Benjamini-Hochberg, family of three primary outcomes"),
+                         ("bh_correction_techtagged_alloutcomes.csv",
+                          "Benjamini-Hochberg, family of all eight outcomes")]:
+        f = PSM_TT / fname
+        if not f.exists():
+            continue
+        d = pd.read_csv(f)
+        lines += ["", f"## {title}", "", "| Technology | Outcome | p raw | p BH |",
+                  "|---|---|---|---|"]
+        lines += [f"| {r.technology} | {OUTCOME_LABELS.get(r.outcome, r.outcome)} "
+                  f"| {float(r.p_raw):.3f} | {float(r.p_bh):.3f} |"
+                  for r in d.itertuples()]
+
+    # Direct contrasts.
+    f = DIAG_R / "p5_relative_and_counts.csv"
+    if f.exists():
+        d = pd.read_csv(f)
+        d = d[d.anticipation == 0]
+        lines += ["", "## Direct contrasts (ATT on the difference of two log1p outcomes)",
+                  "", "| Contrast | Battery | Hydrogen |", "|---|---|---|"]
+        for src in d.outcome.unique():
+            sub = {r.technology: r for r in d[d.outcome == src].itertuples()}
+            if len(sub) != 2:
+                continue
+            cell = {t: f"{float(sub[t].att):.3f} / SE {float(sub[t].se):.3f} "
+                       f"/ p {float(sub[t].p):.3f}" for t in sub}
+            lines.append(f"| {src} | {cell['Battery']} | {cell['Hydrogen']} |")
+
+    # Minimum detectable effects, once the power run has been done.
+    f = POSTAUDIT / "power_mde.csv"
+    if f.exists():
+        d = pd.read_csv(f)
+        d = d[~d["significant"].astype(bool)]
+        lines += ["", "## Minimum detectable effect at 80% power (insignificant outcomes)",
+                  "", "| Technology | Outcome | ATT | p | MDE |", "|---|---|---|---|---|"]
+        for r in d.itertuples():
+            mde = ("n/a on the grid tested" if pd.isna(r.mde_pct)
+                   else (f"{r.mde_log:.3f} log pts" if r.is_contrast
+                         else f"{r.mde_pct:.0f}%"))
+            lines.append(f"| {r.Technology} | {r.Outcome} | {float(r.ATT):.3f} "
+                         f"| {float(r.p_value):.3f} | {mde} |")
+    else:
+        lines += ["", "## Minimum detectable effect at 80% power",
+                  "", "Not yet produced. Run the power chunks "
+                  "(`RUN_POWER <- TRUE` in 06/07, `RUN_P6_POWER <- TRUE` in 10), "
+                  "then notebook 08, then regenerate this file."]
+
+    lines += ["", "## Robustness arms",
+              "", "The three panels of `si/tab_results_appendix.tex` carry the same "
+              "nine rows as Table 1: larger control group (spec 2), not-yet-treated "
+              "controls (hydrogen only, battery is a single cohort), and no matching "
+              "(unmatched eligible pool, doubly robust; all hydrogen rows fail the "
+              "joint pre-trend test, which is why matching is primary). Read them "
+              "there rather than duplicating them here.", ""]
+
+    _write(PATHS.results / "NUMBERS_CRIB.md", "\n".join(lines))
 
 
 def build_all():
@@ -989,6 +1310,9 @@ def build_all():
     build_descriptive_country_balance()
     build_descriptive_exposure()
     build_results_anticipation()
+    build_results_contrasts()
+    build_results_bh_all()
+    build_numbers_crib()
     print("\nNote: tab_descriptive_discontinued-projects.tex is kept hand-made (external sources).")
 
 

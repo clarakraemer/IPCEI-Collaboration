@@ -1,0 +1,37 @@
+"Technology","Outcome","Type","TimeUnit","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated"
+"Battery","Technology-tagged collaborations","Primary","month",0.2936,0.1142,0.01,12.11,0.355,"Wald",362160,5030,30
+"Hydrogen","Technology-tagged collaborations","Primary","month",0.1474,0.0806,0.068,1879.73,0,"Wald",367704,5107,107
+"Battery","Cross-border EU collaborations","Primary","month",0.188,0.0974,0.053,11.476,0.404,"Wald",362160,5030,30
+"Hydrogen","Cross-border EU collaborations","Primary","month",0.1493,0.0646,0.021,1561.31,0,"Wald",367704,5107,107
+"Battery","Cross-sector collaborations","Primary","month",0.2774,0.1079,0.01,13.705,0.25,"Wald",362160,5030,30
+"Hydrogen","Cross-sector collaborations","Primary","month",0.1116,0.088,0.205,1731.822,0,"Wald",367704,5107,107
+"Battery","Cross-sector EU-only collaborations","Primary","month",0.2402,0.0922,0.009,12.148,0.353,"Wald",362160,5030,30
+"Hydrogen","Cross-sector EU-only collaborations","Primary","month",0.1286,0.0822,0.118,1858.374,0,"Wald",367704,5107,107
+"Battery","Non-EU collaborations","Placebo","month",0.2194,0.1159,0.058,14.972,0.184,"Wald",362160,5030,30
+"Hydrogen","Non-EU collaborations","Placebo","month",0.1253,0.0592,0.034,1676.219,0,"Wald",367704,5107,107
+"Battery","Domestic collaborations","Placebo","month",0.1865,0.0608,0.002,11.033,0.441,"Wald",362160,5030,30
+"Hydrogen","Domestic collaborations","Placebo","month",0.0775,0.0697,0.266,1664.605,0,"Wald",367704,5107,107
+"Battery","Within-sector collaborations","Placebo","month",0.1092,0.057,0.055,9.104,0.612,"Wald",362160,5030,30
+"Hydrogen","Within-sector collaborations","Placebo","month",0.0856,0.076,0.26,1304.019,0,"Wald",367704,5107,107
+"Battery","Non-funded collaborations","Benchmark","month",0.0457,0.1254,0.715,12.474,0.329,"Wald",362160,5030,30
+"Hydrogen","Non-funded collaborations","Benchmark","month",0.0506,0.0838,0.546,1122.495,0,"Wald",367704,5107,107
+"Battery","Cross-sector collaborations (NACE-1)","Robustness (NACE-1)","month",0.1764,0.071,0.013,13.417,0.267,"Wald",362160,5030,30
+"Hydrogen","Cross-sector collaborations (NACE-1)","Robustness (NACE-1)","month",0.1002,0.0813,0.218,1946.695,0,"Wald",367704,5107,107
+"Battery","National collaborations","Benchmark","month",0.1291,0.0631,0.041,9.679,0.559,"Wald",362160,5030,30
+"Hydrogen","National collaborations","Benchmark","month",0.0561,0.0569,0.325,1933.266,0,"Wald",367704,5107,107
+"Battery","Cross-border collaborations","Primary","month",0.2449,0.1008,0.015,11.648,0.391,"Wald",362160,5030,30
+"Hydrogen","Cross-border collaborations","Primary","month",0.156,0.0715,0.029,2148.963,0,"Wald",367704,5107,107
+"Battery","EU-internal collaborations","Primary","month",0.1102,0.0611,0.071,10.218,0.511,"Wald",362160,5030,30
+"Hydrogen","EU-internal collaborations","Primary","month",0.1484,0.0525,0.005,1500.052,0,"Wald",367704,5107,107
+"Battery","International collaborations","Benchmark","month",0.2126,0.0851,0.012,12.351,0.338,"Wald",362160,5030,30
+"Hydrogen","International collaborations","Benchmark","month",0.0513,0.0626,0.412,2432.03,0,"Wald",367704,5107,107
+"Battery","Cross-sector collaborations","Primary","month",0.1763,0.0803,0.028,12.429,0.332,"Wald",362160,5030,30
+"Hydrogen","Cross-sector collaborations","Primary","month",0.1002,0.0872,0.25,1945.043,0,"Wald",367704,5107,107
+"Battery","Same-sector collaborations","Benchmark","month",0.2283,0.0823,0.006,8.403,0.677,"Wald",362160,5030,30
+"Hydrogen","Same-sector collaborations","Benchmark","month",0.0984,0.0572,0.085,809.959,0,"Wald",367704,5107,107
+"Battery","Relative technology (log diff)","Contrast","month",0.2479,0.0794,0.002,10.366,0.498,"Wald",362160,5030,30
+"Hydrogen","Relative technology (log diff)","Contrast","month",0.0968,0.1144,0.398,1848.832,0,"Wald",367704,5107,107
+"Battery","Relative geography (log diff)","Contrast","month",-0.1024,0.0864,0.236,11.127,0.433,"Wald",362160,5030,30
+"Hydrogen","Relative geography (log diff)","Contrast","month",0.0971,0.0705,0.168,1631.561,0,"Wald",367704,5107,107
+"Battery","Consortium size (mean firms/collab)","Mechanism","month",1.5058,0.4904,0.002,13.148,0.284,"Wald",362160,5030,30
+"Hydrogen","Consortium size (mean firms/collab)","Mechanism","month",0.5042,0.3422,0.141,1497.182,0,"Wald",367704,5107,107

@@ -292,7 +292,12 @@ print(zero_share_report(battery_s1, hydrogen_s1, outcome_map), row.names = FALSE
 
 ```{r cs-function}
 run_cs <- function(df, yname, label = "",
-                   control_group = "notyettreated",
+                   # Was "notyettreated", which contradicted both cg_for() and
+                   # the default in _cs_helpers.R. Every call site passes
+                   # control_group explicitly, so this default never fired and
+                   # aligning it changes no estimate; it removes the trap of a
+                   # future call silently using the wrong comparison group.
+                   control_group = "nevertreated",
                    clustervars   = NULL) {
   cat("\n=== C&S:", label, "(", yname, ") ===\n")
   if (!yname %in% names(df)) {
@@ -595,20 +600,40 @@ interpretable when events are rare.
 ```{r extensive-margin}
 any_map <- lapply(outcome_map, function(v) sub("^log_collabs", "any_collabs", v))
 
-ext_keys <- c("tech_focused", "cross_border", "cross_sector")  # the ones we care about
+# The three policy-targeted outcomes, i.e. the same family the Benjamini--
+# Hochberg correction uses in section 8.
+#
+# Fixed Nov 2026. The old list was c("tech_focused", "cross_border",
+# "cross_sector"); the last two name the DYAD-LEVEL outcomes, which Table 1
+# stopped reporting in the collaboration-level rewrite, so "[ext] cross_sector"
+# was the extensive margin of an outcome that appears nowhere in the paper.
+# Selection is by KEY, never by display label: keys are stable identifiers,
+# labels are what drifted and broke the Rosenbaum section. The label shown in
+# the table is looked up from `spec`, so this table and Table 1 cannot disagree
+# about what an outcome is called, and a missing key stops the run.
+#
+# Three keys, not the four Primary rows of `spec`: `agg_simple()` draws from the
+# global RNG stream without reseeding, so changing the NUMBER of calls here
+# would move every p-value in sections 6 and 7. Six calls in, six calls out.
+ext_keys <- c("tech_focused", "cl_eu_internal", "cl_crosssector_n1")
+ext_spec <- Filter(function(s) s[[4]] %in% ext_keys, spec)
+if (length(ext_spec) != length(ext_keys))
+  stop("Extensive margin: key(s) missing from spec: ",
+       paste(setdiff(ext_keys, vapply(spec, `[[`, "", 4)), collapse = ", "))
 ext_rows <- list()
-for (key in ext_keys) {
+for (s in ext_spec) {
+  label <- s[[2]]; key <- s[[4]]
   cb <- run_cs(battery_s1,  any_map[[key]]["battery"],
-               paste("Battery S2 -- EXT", key),
+               paste("Battery S1 -- EXT", key),
                control_group = cg_for("battery"))   # single cohort -> nevertreated
   ch <- run_cs(hydrogen_s1, any_map[[key]]["hydrogen"],
-               paste("Hydrogen S2 -- EXT", key),
+               paste("Hydrogen S1 -- EXT", key),
                control_group = cg_for("hydrogen"))
   ext_rows[[length(ext_rows) + 1]] <-
-    make_att_row(agg_simple(cb), "Battery", paste0("[ext] ", key), "Ext. margin",
+    make_att_row(agg_simple(cb), "Battery", paste0("[ext] ", label), "Ext. margin",
                  cb, battery_s1, any_map[[key]]["battery"])
   ext_rows[[length(ext_rows) + 1]] <-
-    make_att_row(agg_simple(ch), "Hydrogen", paste0("[ext] ", key), "Ext. margin",
+    make_att_row(agg_simple(ch), "Hydrogen", paste0("[ext] ", label), "Ext. margin",
                  ch, hydrogen_s1, any_map[[key]]["hydrogen"])
 }
 ext_table <- do.call(rbind, ext_rows)
@@ -690,7 +715,20 @@ write.csv(rob_table,
 
 ---
 
-# 7. Rosenbaum Bounds (technology-tagged)
+# 7. Rosenbaum Bounds (technology-tagged) --- RETIRED, `RUN_ROSENBAUM <- FALSE`
+
+**This analysis is no longer reported and the code is kept for the record only.**
+Matching is with replacement, so matched sets overlap: one battery and five
+hydrogen controls sit in two matched sets at once, and the set independence that
+`rbounds::psens` assumes fails. A valid matched-set procedure exists
+(`sensitivitymult::senm`) but is not installed, and the pair contrast's estimand
+(full pre-window baseline) differs from the C&S estimand (baseline at $g-1$),
+which matters for hydrogen. The reasoning and the decision to drop the panel
+from the appendix table are in `tables.py` around line 230.
+`rosenbaum_bounds_techtagged.csv` is retained and marked obsolete rather than
+deleted; its labels predate the collaboration-level rewrite, so do not quote it.
+The selection bug described in the `rosenbaum-run` chunk was fixed in Nov 2026
+so that a revival starts from working code, not so that this should be revived.
 
 Method preserved exactly from the original file: collapse each matched set to a
 post-treatment pair difference (treated firm vs the mean of its matched
@@ -781,24 +819,39 @@ run_rosenbaum <- function(matched_firms_path, cs_panel_path,
 ```
 
 ```{r rosenbaum-run, eval=RUN_ROSENBAUM}
-# Dynamic selection: test exactly the outcomes that are significant in THIS run
-# (same derivation as the section-9 power sim), using the global SIG_THRESHOLD
-# from the setup chunk. key_by_outcome is defined here too (same values).
-key_by_outcome <- c(
-  "Technology-tagged collaborations"    = "tech_focused",
-  "Cross-border EU collaborations"      = "cross_border",
-  "Cross-sector collaborations"         = "cross_sector",
-  "Cross-sector EU-only collaborations" = "cross_sector_eu",
-  "Non-EU collaborations"               = "non_eu",
-  "Domestic collaborations"             = "domestic",
-  "Within-sector collaborations"        = "within_sector",
-  "Non-funded collaborations"           = "non_funded"
-)
+# Dynamic selection: test exactly the outcomes that are significant in THIS run,
+# using the global SIG_THRESHOLD from the setup chunk.
+#
+# The label -> key lookup that used to live here has been DELETED (Nov 2026).
+# It was hand-written, and five of its eight display labels were renamed in the
+# collaboration-level rewrite ("Cross-border EU" -> "Cross-border", "Non-EU" ->
+# "International", "Domestic" -> "National", "Within-sector" -> "Same-sector",
+# and "Cross-sector EU-only" dropped entirely). Rows that failed to match were
+# discarded by an !is.na() filter, silently, so a re-run would have tested three
+# outcomes while appearing to test eight. Worse, "Cross-sector collaborations"
+# DID still match, but onto key `cross_sector` -- the dyad-level NACE-2 outcome,
+# not the collaboration-level NACE-1 `cl_crosssector_n1` that Table 1 reports --
+# so the sectoral bound would have been computed on a different outcome from the
+# ATT it exists to stress-test.
+#
+# This is the identical failure mode that section 9 had and that was fixed there
+# by building the cell list from `spec`. Same fix here: `spec` is the single
+# source of the (outcome label, key) pairing, so the two can no longer drift.
+# Any rosenbaum_bounds_techtagged.csv written before this change carries the old
+# labels and is void.
+spec_keys <- do.call(rbind, lapply(spec, function(s)
+  data.frame(Outcome = s[[2]], key = s[[4]], stringsAsFactors = FALSE)))
 
 sig_rb <- att_table[!is.na(att_table$p_value) &
                       att_table$p_value < SIG_THRESHOLD, , drop = FALSE]
-sig_rb$key <- key_by_outcome[sig_rb$Outcome]
-sig_rb <- sig_rb[!is.na(sig_rb$key), , drop = FALSE]
+sig_rb <- merge(sig_rb, spec_keys, by = "Outcome", all.x = TRUE)
+
+# A label in att_table with no key in spec is now an ERROR, not a silent drop:
+# att_table is itself built from spec, so a mismatch means something upstream
+# has been edited inconsistently and the run should stop rather than under-test.
+if (any(is.na(sig_rb$key)))
+  stop("Rosenbaum: no spec key for outcome(s): ",
+       paste(unique(sig_rb$Outcome[is.na(sig_rb$key)]), collapse = ", "))
 
 # Feed the tech-tagged COUNT column (n_collabs_*, not the log) for each
 # significant (Technology, outcome) pair; matched-pair method unchanged.
@@ -910,126 +963,152 @@ write.csv(bh_all,
 
 ---
 
-# 9. Power Simulation (dynamic --- significant outcomes only)
+# 9. Power simulation (the insignificant outcomes)
 
-Design-based power simulation ported verbatim from the original file: synthetic
-treated firms are drawn from the matched controls reproducing the real cohort
-sizes, a constant additive effect is imposed on the log outcome over the
-post-period, the C&S overall ATT is re-estimated per draw, and the rejection
-rate at the 5% level is recorded. The methodology and the per-effect-size draw
-count are unchanged. The only change: it runs **only on the outcomes flagged as
-findings** in section 4 (`p_value < SIG_THRESHOLD`), mapped back to their
-`outcome_map` keys, and the combined plot shows just those, each with a
-vertical line at its estimated ATT.
+Design-based power simulation on the REAL treated firms: the estimated effect
+is subtracted from treated post-approval outcomes to impose the null, a
+constant additive effect is then imposed on the log outcome over the
+post-period, firms are resampled with replacement within cohort to generate
+sampling variation, the C&S overall ATT is re-estimated per draw with the same
+multiplier bootstrap as the reported estimates, and the rejection rate at the
+5% level is recorded. The grid starts at zero, so every cell carries its own
+size check. The earlier design drew synthetic treated firms from the matched
+controls and overstated power in every cell; the full post-mortem is in the
+`run_power_sim` header in `_cs_helpers.R`.
 
-```{r power-function}
-run_power_sim <- function(cs_data, outcome_var, att_true,
-                          n_sims = 100, label = "") {
-  controls_df   <- cs_data[cs_data$is_control == 1, ]
-  control_names <- unique(controls_df$Linkedin_name)
+Four changes from the earlier version of this section:
 
-  real_cohorts <- cs_data %>%
-    filter(is_treated == 1) %>%
-    distinct(Linkedin_name, g_period) %>%
-    count(g_period) %>%
-    arrange(g_period)
+1. **It runs on the insignificant outcomes, not the significant ones.** Power
+   evidence is what distinguishes "no effect" from "cannot tell", so it is the
+   *insignificant* estimates that need it; a significant estimate is its own
+   proof of power. Section 3.4 of the paper already describes it that way. The
+   candidate set is the full reported set (`spec`), and the only filter applied
+   to it is `p >= POWER_SIG_THRESHOLD`, so nothing is included or excluded on
+   the size of its own effect.
+   *(Nov 2026: that filter is at 0.05, not the global 0.10, so the three
+   outcomes between the two thresholds are covered. See `POWER_SIG_THRESHOLD`.)*
+2. **The cell list is built from `spec`** (section 4), so it cannot drift from
+   `att_table`. The previous version selected rows by p-value and then matched
+   them on display labels; five of those labels were renamed in the
+   collaboration-level rewrite, so those outcomes were silently skipped.
+3. **The control group is passed in, not hard-coded.** The old inline copy ran
+   `att_gt(control_group = "notyettreated")` while every reported estimate uses
+   never-treated controls via `cg_for()`. Battery is a single cohort so the two
+   coincide; staggered hydrogen is a different design.
 
-  results <- numeric(n_sims)
+The figure for the SI is drawn in notebook 08 from `power_all_outcomes.csv`;
+the plot at the end of this section is a working check, not a paper exhibit.
 
-  for (i in seq_len(n_sims)) {
-    available    <- control_names
-    treated_pool <- character(0)
-    g_vec        <- integer(0)
+```{r power-helpers}
+# One definition of the power simulation, in _cs_helpers.R. Source it into its
+# OWN environment and take only the power functions, so this script's inline
+# run_cs / outcome_map / make_att_row are left untouched.
+.power_env <- new.env()
+sys.source("_cs_helpers.R", envir = .power_env)
+run_power_sim  <- .power_env$run_power_sim
+mde_at         <- .power_env$mde_at
+POWER_PCT_GRID <- .power_env$POWER_PCT_GRID   # 5, 10, 15, 20, 30, 40 (%)
+POWER_LOG_GRID <- .power_env$POWER_LOG_GRID   # the same grid in log points
 
-    for (k in seq_len(nrow(real_cohorts))) {
-      n_k    <- real_cohorts$n[k]
-      cohort <- real_cohorts$g_period[k]
-      if (length(available) < n_k) break
-      sampled      <- sample(available, n_k, replace = FALSE)
-      available    <- setdiff(available, sampled)
-      treated_pool <- c(treated_pool, sampled)
-      g_vec        <- c(g_vec, rep(cohort, n_k))
-    }
+# Draws per (technology, outcome, effect size). The Monte Carlo SE of a power
+# estimate is at most 0.5/sqrt(n_sims): 3.5 points at 200 draws, 2.2 at 500.
+# Simulating only the five null cells leaves room for 500, which matters because
+# the number quoted in the text is where the curve crosses 0.80 and a 3-point
+# wobble there moves the minimum detectable effect by a percentage point or two.
+N_SIMS_POWER <- 500
 
-    g_lookup <- data.frame(Linkedin_name = treated_pool,
-                           g_sim = g_vec,
-                           stringsAsFactors = FALSE)
+# The null is imposed on the REAL treated firms (see the long note in
+# _cs_helpers.R), so the effect grid gets a zero element: at a true effect of
+# zero the rejection rate must come back near 0.05. That size check is the
+# diagnostic that would have caught the previous placebo-from-controls design,
+# so it runs with every cell rather than on request. `mde_at` is unaffected,
+# since a point below 0.80 cannot move the first crossing.
+POWER_GRID_RUN <- c(0, POWER_LOG_GRID)
 
-    sim_treated <- controls_df %>%
-      filter(Linkedin_name %in% treated_pool) %>%
-      left_join(g_lookup, by = "Linkedin_name") %>%
-      mutate(post_sim     = as.integer(period >= g_sim),
-             outcome_sim  = .data[[outcome_var]] + att_true * post_sim,
-             g_period_sim = g_sim)
+# Multiplier-bootstrap draws INSIDE each simulated draw. The simulation has to
+# mirror the inference the paper reports, and the reported SEs are bootstrap,
+# not analytic: at battery's 29 clusters the analytic SE is ~1.7x too small, so
+# the previous bstrap = FALSE version overstated power on its own. 9999 is
+# unaffordable n_sims times over; 199 is enough for a reject/accept decision
+# whose Monte Carlo error averages out across sims.
+BITERS_SIM <- 199
 
-    sim_controls <- controls_df %>%
-      filter(Linkedin_name %in% available) %>%
-      mutate(outcome_sim  = .data[[outcome_var]],
-             g_period_sim = 0L)
+# The effect sizes of a cell run in parallel, so one core per size keeps a
+# cell to a single draw-batch of wall clock. Leave one core for the machine.
+POWER_CORES <- max(1L, min(length(POWER_GRID_RUN),
+                           parallel::detectCores() - 1L))
 
-    sim_data <- bind_rows(sim_treated, sim_controls) %>%
-      mutate(firm_id_sim = as.integer(factor(Linkedin_name)))
-
-    result <- tryCatch({
-      cs_sim <- att_gt(
-        yname         = "outcome_sim",
-        tname         = "period",
-        idname        = "firm_id_sim",
-        gname         = "g_period_sim",
-        control_group = "notyettreated",
-        anticipation  = 0,   # paper assumption: no anticipation
-        bstrap        = FALSE,
-        panel         = TRUE,
-        print_details = FALSE,
-        data          = sim_data
-      )
-      agg_sim <- aggte(cs_sim, type = "simple")
-      z_stat  <- agg_sim$overall.att / agg_sim$overall.se
-      as.integer(abs(z_stat) > 1.96)
-    }, error = function(e) NA_integer_)
-
-    results[i] <- result
-  }
-
-  mean(results, na.rm = TRUE)
-}
+# Significance threshold for the POWER selection ONLY, deliberately not
+# SIG_THRESHOLD. The global constant is 0.10 and also drives the Rosenbaum
+# selection, so it must not move; but at 0.10 three outcomes that any referee
+# working at 5% reads as nulls get no power curve -- battery national
+# (p = 0.068), hydrogen international (0.055) and hydrogen cross-sector
+# (0.083) -- while the SI caption and the results paragraph say "the
+# non-significant outcomes" without qualification. Simulating at 0.05 makes
+# that phrase true instead of something a reader can falsify from Table 1.
+# Cost: 8 cells rather than 5. The `significant` column written to
+# power_all_outcomes.csv uses THIS threshold, which is what notebook 08
+# filters the SI figure on, so figure and caption agree by construction.
+POWER_SIG_THRESHOLD <- 0.05
 ```
 
-```{r power-sig-set}
+```{r power-cells}
+# The power set IS the reported set.
+power_cells <- do.call(rbind, lapply(spec, function(s)
+  data.frame(Outcome = s[[2]], Type = s[[3]], key = s[[4]],
+             stringsAsFactors = FALSE)))
+power_cells <- merge(power_cells,
+                     data.frame(Technology = c("Battery", "Hydrogen"),
+                                stringsAsFactors = FALSE))
+power_cells$yname <- mapply(function(k, tech) outcome_map[[k]][tolower(tech)],
+                            power_cells$key, power_cells$Technology)
+power_cells <- merge(
+  power_cells,
+  att_table[, c("Technology", "Outcome", "ATT", "p_value")],
+  by = c("Technology", "Outcome"), all.x = TRUE)
+power_cells$significant <- !is.na(power_cells$p_value) &
+  power_cells$p_value < POWER_SIG_THRESHOLD
+power_cells <- power_cells[order(power_cells$Technology, power_cells$Outcome), ]
 
-# Map section-4 display names back to outcome_map keys.
-# (SIG_THRESHOLD comes from the setup chunk.)
-key_by_outcome <- c(
-  "Technology-tagged collaborations"    = "tech_focused",
-  "Cross-border EU collaborations"      = "cross_border",
-  "Cross-sector collaborations"         = "cross_sector",
-  "Cross-sector EU-only collaborations" = "cross_sector_eu",
-  "Non-EU collaborations"               = "non_eu",
-  "Domestic collaborations"             = "domestic",
-  "Within-sector collaborations"        = "within_sector",
-  "Non-funded collaborations"           = "non_funded"
-)
+# Only the nulls are simulated. A significant estimate is its own proof of
+# power, so simulating it answers a question nobody asked and triples the
+# runtime. The selection is on significance alone, applied to the full reported
+# set, so no outcome is picked or dropped on the size of its own effect.
+power_run <- power_cells[!power_cells$significant, ]
 
-sig_rows <- att_table[!is.na(att_table$p_value) &
-                        att_table$p_value < SIG_THRESHOLD, , drop = FALSE]
-sig_rows$key <- key_by_outcome[sig_rows$Outcome]
-sig_rows <- sig_rows[!is.na(sig_rows$key), , drop = FALSE]
+cat("\n=== Reported cells (", nrow(power_cells), "outcome x technology ) ===\n")
+print(power_cells[, c("Technology", "Outcome", "yname", "ATT", "p_value",
+                      "significant")], row.names = FALSE)
+cat("\nSimulated (p >=", POWER_SIG_THRESHOLD, "):", nrow(power_run), "cells\n")
+print(power_run[, c("Technology", "Outcome", "ATT", "p_value")],
+      row.names = FALSE)
+```
 
-cat("\n=== Significant outcomes (p <", SIG_THRESHOLD, ",", TIME_UNIT, ") ===\n")
-if (nrow(sig_rows) == 0) {
-  cat("  none -- power simulation will be skipped.\n")
-} else {
-  print(sig_rows[, c("Technology", "Outcome", "ATT", "p_value", "key")],
-        row.names = FALSE)
+```{r power-timing, eval=RUN_POWER}
+# Budget the run before starting it: time ONE draw per technology and
+# extrapolate. Printed only.
+for (tech in c("Battery", "Hydrogen")) {
+  dfp <- if (tech == "Battery") battery_s1 else hydrogen_s1
+  yn  <- outcome_map[["tech_focused"]][tolower(tech)]
+  el  <- system.time(
+    run_power_sim(dfp, yn, POWER_LOG_GRID[1], cg_for(tolower(tech)),
+                  n_sims = 2, label = paste("timing", tech),
+                  biters_sim = BITERS_SIM)
+  )[["elapsed"]] / 2
+  n_cells <- sum(power_run$Technology == tech)
+  tot <- el * N_SIMS_POWER * length(POWER_GRID_RUN) * n_cells
+  cat(sprintf("%-9s %.2f s/draw x %d sims x %d sizes x %d outcomes = %.1f h serial\n",
+              tech, el, N_SIMS_POWER, length(POWER_GRID_RUN), n_cells, tot / 3600))
 }
+cat("Divide by mc.cores for the wall-clock estimate.\n")
 ```
 
 ```{r power-run, eval=RUN_POWER}
 library(parallel)
 
-# Robust parallelism: fork when available, but fall back to serial if the fork
+# Robust parallelism: fork when available, fall back to serial if the fork
 # workers fail (e.g. a non-interactive session), so an overnight run never
-# silently returns no results. Shadows parallel::mclapply for the calls below.
+# silently returns no results.
 mclapply <- function(X, FUN, ..., mc.cores = min(4L, parallel::detectCores())) {
   res <- tryCatch(parallel::mclapply(X, FUN, ..., mc.cores = mc.cores),
                   error = function(e) base::lapply(X, FUN))
@@ -1038,90 +1117,103 @@ mclapply <- function(X, FUN, ..., mc.cores = min(4L, parallel::detectCores())) {
   res
 }
 
-att_grid     <- log(1 + c(0.10, 0.20, 0.30))
-att_pct_grid <- round((exp(att_grid) - 1) * 100, 1)
+power_rows <- list()
+for (i in seq_len(nrow(power_run))) {
+  tech <- power_run$Technology[i]
+  dfp  <- if (tech == "Battery") battery_s1 else hydrogen_s1
+  yn   <- power_run$yname[i]
+  lbl  <- paste(tech, "--", power_run$Outcome[i])
 
-if (nrow(sig_rows) == 0) {
-  cat("No significant outcomes -- skipping power simulation.\n")
-  power_long <- NULL
-} else {
-  power_rows <- list()
-  for (i in seq_len(nrow(sig_rows))) {
-    tech  <- sig_rows$Technology[i]
-    key   <- sig_rows$key[i]
-    oc    <- sig_rows$Outcome[i]
-    dfp   <- if (tech == "Battery") battery_s1 else hydrogen_s1
-    yname <- outcome_map[[key]][tolower(tech)]
-    lbl   <- paste(tech, "--", oc)
+  cat("Power simulation:", lbl, "(", yn, ")\n")
+  # One core per effect size, so a cell costs one draw-batch of wall clock.
+  # att_hat imposes the null: the estimated effect is removed from the treated
+  # firms' post-periods before the hypothesised one is added, so the true effect
+  # in a draw is `a` and not `a` on top of what the data already contain.
+  grid_rows <- mclapply(POWER_GRID_RUN, function(a)
+    run_power_sim(dfp, yn, a, cg_for(tolower(tech)),
+                  n_sims = N_SIMS_POWER, label = lbl,
+                  att_hat = power_run$ATT[i], biters_sim = BITERS_SIM),
+    mc.cores = POWER_CORES)
+  grid_rows <- grid_rows[!vapply(grid_rows, is.null, logical(1))]
+  if (!length(grid_rows)) next
 
-    cat("Power simulation:", lbl, "(", yname, ")\n")
-    pw <- unlist(mclapply(att_grid, function(a)
-      run_power_sim(dfp, yname, a, 100, lbl), mc.cores = 4))
+  out <- do.call(rbind, grid_rows)
+  out$Technology  <- tech
+  out$Outcome     <- power_run$Outcome[i]
+  out$Type        <- power_run$Type[i]
+  out$key         <- power_run$key[i]
+  out$yname       <- yn
+  out$ATT         <- power_run$ATT[i]
+  out$p_value     <- power_run$p_value[i]
+  out$significant <- power_run$significant[i]
+  power_rows[[length(power_rows) + 1]] <- out
+}
 
-    power_rows[[length(power_rows) + 1]] <- data.frame(
-      spec    = lbl,
-      att_pct = att_pct_grid,
-      power   = pw,
-      stringsAsFactors = FALSE
-    )
-  }
-  power_long <- do.call(rbind, power_rows)
-  print(power_long)
-  write.csv(power_long,
-            file.path(out_dir, "power_techtagged.csv"), row.names = FALSE)
+power_all <- do.call(rbind, power_rows)
+power_all <- power_all[, c("Technology", "Outcome", "Type", "key", "yname",
+                           "att_log", "att_pct", "power", "n_draws", "n_sims",
+                           "ATT", "p_value", "significant")]
+print(power_all, row.names = FALSE)
+write.csv(power_all, file.path(out_dir, "power_all_outcomes.csv"),
+          row.names = FALSE)
+
+# Any cell where draws failed to converge is a problem, not a rounding issue.
+bad <- power_all[power_all$n_draws < power_all$n_sims, ]
+if (nrow(bad)) {
+  cat("\n!! draws that did not converge:\n"); print(bad, row.names = FALSE)
 }
 ```
 
-```{r power-plot, eval=RUN_POWER}
-if (!is.null(power_long)) {
-  power_long$Technology <- sub(" --.*$", "", power_long$spec)
-  power_long$Technology <- paste(power_long$Technology, "IPCEI")
-  power_long$Outcome    <- sub("^.* -- ", "", power_long$spec)
+```{r power-mde, eval=RUN_POWER}
+# Minimum detectable effect at 80% power, per cell. This is the number the
+# robustness paragraph quotes for a null: "this sample detects effects of X% or
+# larger in 80% of draws, so the null rules out effects above X%."
+power_mde <- do.call(rbind, lapply(
+  split(power_all, list(power_all$Technology, power_all$Outcome), drop = TRUE),
+  function(d) data.frame(
+    Technology  = d$Technology[1],
+    Outcome     = d$Outcome[1],
+    Type        = d$Type[1],
+    ATT         = d$ATT[1],
+    p_value     = d$p_value[1],
+    significant = d$significant[1],
+    mde_pct     = round(mde_at(d$att_pct, d$power, 0.80), 1),
+    power_at_10 = d$power[which.min(abs(d$att_pct - 10))],
+    power_at_20 = d$power[which.min(abs(d$att_pct - 20))],
+    # Rejection rate when the true effect is zero. Must sit near 0.05; a value
+    # far above it means the simulated population no longer matches the design
+    # and the whole column is void. Read this BEFORE quoting any MDE.
+    size        = d$power[which(abs(d$att_log) < 1e-12)[1]],
+    stringsAsFactors = FALSE)))
+power_mde <- power_mde[order(power_mde$significant, power_mde$Technology,
+                             power_mde$Outcome), ]
+cat("\n=== Minimum detectable effect at 80% power ===\n")
+cat("NA = the curve never reaches 80% over the grid tested.\n")
+print(power_mde, row.names = FALSE)
+write.csv(power_mde, file.path(out_dir, "power_mde_outcomes.csv"),
+          row.names = FALSE)
+```
 
-  # Annex figure defends the SIGNIFICANT results -> keep only those.
-  # (No-op if the power sim already ran on sig_rows only.)
-  sig_specs  <- paste(sig_rows$Technology, "--", sig_rows$Outcome)
-  power_long <- power_long[power_long$spec %in% sig_specs, ]
-
-  vlines <- data.frame(
-    Technology = paste(sig_rows$Technology, "IPCEI"),
-    Outcome    = sig_rows$Outcome,
-    att_at     = (exp(sig_rows$ATT) - 1) * 100,
-    stringsAsFactors = FALSE
-  )
-
-  out_lvls <- sort(unique(power_long$Outcome))
-  out_cols <- setNames(
-    c("#1b9e77","#d95f02","#7570b3","#e7298a","#66a61e","#e6ab02","#a6761d")[seq_along(out_lvls)],
-    out_lvls
-  )
-
-  p_power <- ggplot(power_long,
-                    aes(att_pct, power, colour = Outcome)) +
-    geom_hline(yintercept = 0.80, linetype = "dashed",
-               colour = "grey50", linewidth = 0.5) +
-    geom_vline(data = vlines,
-               aes(xintercept = att_at, colour = Outcome),
-               linetype = "dotted", linewidth = 0.5, show.legend = FALSE) +
-    geom_line(linewidth = 0.8) +
-    geom_point(size = 1.5) +
-    facet_wrap(~ Technology) +
-    scale_colour_manual(values = out_cols) +
-    scale_y_continuous(labels = percent, limits = c(0.6, 1),
-                       breaks = seq(0.6, 1, 0.1), expand = expansion(mult = c(0, 0.02))) +
-    labs(x = "True treatment effect (% change in outcome)",
-         y = "Simulated power", colour = NULL) +
-    guides(colour = guide_legend(nrow = 2, byrow = TRUE)) +
-    theme_minimal(base_size = 11) +
-    theme(legend.position = "bottom",
-          legend.text  = element_text(size = 8),
-          panel.spacing = unit(1, "lines"),
-          strip.text   = element_text(face = "bold"))
-  print(p_power)
-  ggsave(file.path(out_dir, "power_techtagged_plot.pdf"),
-         p_power, width = 9, height = 5)
-} else {
-  cat("Power plot skipped (no significant outcomes).\n")
+```{r power-plot-check, eval=RUN_POWER}
+# Working check only. The SI figure is drawn in notebook 08 from the CSV.
+if (exists("power_all") && !is.null(power_all)) {
+  pc <- power_all[!power_all$significant, ]
+  if (nrow(pc)) {
+    p_power <- ggplot(pc, aes(att_pct, power, colour = Outcome)) +
+      geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey50") +
+      geom_line(linewidth = 0.8) + geom_point(size = 1.5) +
+      facet_wrap(~ paste(Technology, "IPCEI")) +
+      scale_y_continuous(labels = percent, limits = c(0, 1)) +
+      labs(x = "True treatment effect (% change in outcome)",
+           y = "Simulated power", colour = NULL,
+           title = "Insignificant outcomes only (working check)") +
+      theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+    print(p_power)
+    ggsave(file.path(out_dir, "power_null_outcomes_check.pdf"),
+           p_power, width = 9, height = 5)
+  } else {
+    cat("No insignificant outcomes -- nothing to plot.\n")
+  }
 }
 ```
 
@@ -1133,9 +1225,11 @@ Did treated firms join LARGER multi-firm collaborations after approval? This is 
 potential mechanical driver of the composition results. `mean_collab_size` is the
 mean number of firms per collaboration a firm participates in, per period --- a
 **level**, not a count and not a share. It is run on the RAW column: no `log1p`,
-not in `outcome_map`. Technology-specific control group via `cg_for()`
-(battery `nevertreated`, hydrogen `notyettreated`); `anticipation = 0` is already
-set inside `run_cs()`. `TIME_UNIT`-aware (quarterly averages the per-month means).
+not in `outcome_map`. Control group via `cg_for()`, which is `nevertreated` for
+both technologies (an earlier version of this line said hydrogen used
+`notyettreated`; it does not, and has not since `cg_for()` was introduced ---
+not-yet-treated appears only in the robustness panel in section 6);
+`anticipation = 0` is already set inside `run_cs()`. `TIME_UNIT`-aware (quarterly averages the per-month means).
 
 ```{r consortium-size}
 # Two versions, see the note above:

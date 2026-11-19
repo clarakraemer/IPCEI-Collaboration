@@ -1,0 +1,3 @@
+"Technology","Outcome","Type","TimeUnit","ATT","SE","p_value","pretrend_stat","pretrend_p_value","pretrend_test","N_obs","N_units","N_treated"
+"Battery","Total collabs","Primary","month",0.1874,0.1638,0.253,10.164,0.516,"Wald",8280,115,29
+"Hydrogen","Total collabs","Primary","month",0.0932,0.0854,0.275,7.814,0.8,"ES-joint",19080,265,93

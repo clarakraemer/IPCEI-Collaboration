@@ -1,0 +1,121 @@
+technology,window,sample,n_collabs,n_crosssector,n_samesector,share_of_classified_pct
+Biomass,2020-2025,all,7422,5206,2181,70.5
+Biomass,2020-2025,excl. IPCEI firms,7134,4977,2122,70.1
+Biomass,2020 only,all,291,205,86,70.4
+Biomass,2020 only,excl. IPCEI firms,281,198,83,70.5
+Biofuels,2020-2025,all,13291,9539,3660,72.3
+Biofuels,2020-2025,excl. IPCEI firms,11811,8293,3426,70.8
+Biofuels,2020 only,all,386,281,105,72.8
+Biofuels,2020 only,excl. IPCEI firms,339,251,88,74.0
+Biogas,2020-2025,all,18781,13493,5186,72.2
+Biogas,2020-2025,excl. IPCEI firms,17658,12581,4975,71.7
+Biogas,2020 only,all,860,670,190,77.9
+Biogas,2020 only,excl. IPCEI firms,809,630,179,77.9
+Wind,2020-2025,all,89721,63817,25502,71.4
+Wind,2020-2025,excl. IPCEI firms,76539,53377,22760,70.1
+Wind,2020 only,all,3941,2835,1098,72.1
+Wind,2020 only,excl. IPCEI firms,3407,2425,974,71.3
+Offshore_Wind,2020-2025,all,49648,37241,12232,75.3
+Offshore_Wind,2020-2025,excl. IPCEI firms,39646,29279,10192,74.2
+Offshore_Wind,2020 only,all,1934,1476,456,76.4
+Offshore_Wind,2020 only,excl. IPCEI firms,1585,1204,379,76.1
+Solar,2020-2025,all,162241,99324,61845,61.6
+Solar,2020-2025,excl. IPCEI firms,156542,94996,60474,61.1
+Solar,2020 only,all,6965,5066,1890,72.8
+Solar,2020 only,excl. IPCEI firms,6661,4823,1829,72.5
+Concentrated_Solar,2020-2025,all,1892,1390,499,73.6
+Concentrated_Solar,2020-2025,excl. IPCEI firms,1788,1298,487,72.7
+Concentrated_Solar,2020 only,all,127,99,28,78.0
+Concentrated_Solar,2020 only,excl. IPCEI firms,119,92,27,77.3
+Waste_to_Heat,2020-2025,all,5764,4385,1354,76.4
+Waste_to_Heat,2020-2025,excl. IPCEI firms,5410,4085,1300,75.9
+Waste_to_Heat,2020 only,all,270,216,53,80.3
+Waste_to_Heat,2020 only,excl. IPCEI firms,254,202,51,79.8
+Direct_Air_Capture,2020-2025,all,3336,2515,804,75.8
+Direct_Air_Capture,2020-2025,excl. IPCEI firms,3214,2408,789,75.3
+Direct_Air_Capture,2020 only,all,36,30,6,83.3
+Direct_Air_Capture,2020 only,excl. IPCEI firms,36,30,6,83.3
+Carbon_Capture_And_Storage,2020-2025,all,18991,14520,4396,76.8
+Carbon_Capture_And_Storage,2020-2025,excl. IPCEI firms,16293,12316,3902,75.9
+Carbon_Capture_And_Storage,2020 only,all,519,413,104,79.9
+Carbon_Capture_And_Storage,2020 only,excl. IPCEI firms,399,324,73,81.6
+Biochar,2020-2025,all,3995,2808,1167,70.6
+Biochar,2020-2025,excl. IPCEI firms,3937,2754,1163,70.3
+Biochar,2020 only,all,54,45,9,83.3
+Biochar,2020 only,excl. IPCEI firms,53,44,9,83.0
+Carbon_Direct_Removal,2020-2025,all,5454,4139,1283,76.3
+Carbon_Direct_Removal,2020-2025,excl. IPCEI firms,5292,3990,1270,75.9
+Carbon_Direct_Removal,2020 only,all,54,45,9,83.3
+Carbon_Direct_Removal,2020 only,excl. IPCEI firms,50,44,6,88.0
+BECCS,2020-2025,all,997,819,173,82.6
+BECCS,2020-2025,excl. IPCEI firms,933,757,171,81.6
+BECCS,2020 only,all,9,7,2,77.8
+BECCS,2020 only,excl. IPCEI firms,9,7,2,77.8
+Hydrogen,2020-2025,all,111268,79264,31388,71.6
+Hydrogen,2020-2025,excl. IPCEI firms,92187,64702,26869,70.7
+Hydrogen,2020 only,all,2714,2068,645,76.2
+Hydrogen,2020 only,excl. IPCEI firms,2004,1509,494,75.3
+Nuclear_Energy,2020-2025,all,10647,7638,2948,72.2
+Nuclear_Energy,2020-2025,excl. IPCEI firms,10272,7363,2848,72.1
+Nuclear_Energy,2020 only,all,414,310,104,74.9
+Nuclear_Energy,2020 only,excl. IPCEI firms,409,305,104,74.6
+Nuclear_Fusion,2020-2025,all,2133,1549,580,72.8
+Nuclear_Fusion,2020-2025,excl. IPCEI firms,2070,1506,560,72.9
+Nuclear_Fusion,2020 only,all,84,64,20,76.2
+Nuclear_Fusion,2020 only,excl. IPCEI firms,78,58,20,74.4
+Hydro_Energy,2020-2025,all,9197,6292,2830,69.0
+Hydro_Energy,2020-2025,excl. IPCEI firms,8851,6013,2763,68.5
+Hydro_Energy,2020 only,all,482,364,117,75.7
+Hydro_Energy,2020 only,excl. IPCEI firms,461,347,113,75.4
+Geothermal,2020-2025,all,10094,7070,2917,70.8
+Geothermal,2020-2025,excl. IPCEI firms,9799,6861,2831,70.8
+Geothermal,2020 only,all,255,214,41,83.9
+Geothermal,2020 only,excl. IPCEI firms,246,205,41,83.3
+Battery,2020-2025,all,103728,64741,38300,62.8
+Battery,2020-2025,excl. IPCEI firms,96214,59831,35696,62.6
+Battery,2020 only,all,3207,2308,891,72.1
+Battery,2020 only,excl. IPCEI firms,2919,2087,824,71.7
+Electric_Vehicles,2020-2025,all,124245,83099,40470,67.2
+Electric_Vehicles,2020-2025,excl. IPCEI firms,117497,78366,38455,67.1
+Electric_Vehicles,2020 only,all,4417,3254,1156,73.8
+Electric_Vehicles,2020 only,excl. IPCEI firms,4127,3044,1076,73.9
+Sustainable_Aviation_Fuels,2020-2025,all,12337,9197,3068,75.0
+Sustainable_Aviation_Fuels,2020-2025,excl. IPCEI firms,10198,7320,2806,72.3
+Sustainable_Aviation_Fuels,2020 only,all,158,120,38,75.9
+Sustainable_Aviation_Fuels,2020 only,excl. IPCEI firms,110,77,33,70.0
+E_Fuels,2020-2025,all,6415,4611,1760,72.4
+E_Fuels,2020-2025,excl. IPCEI firms,5671,3995,1632,71.0
+E_Fuels,2020 only,all,123,93,30,75.6
+E_Fuels,2020 only,excl. IPCEI firms,104,76,28,73.1
+Marine_Energy,2020-2025,all,9158,7367,1771,80.6
+Marine_Energy,2020-2025,excl. IPCEI firms,8557,6801,1736,79.7
+Marine_Energy,2020 only,all,442,374,68,84.6
+Marine_Energy,2020 only,excl. IPCEI firms,414,346,68,83.6
+Heat_Pumps,2020-2025,all,14228,10218,3964,72.0
+Heat_Pumps,2020-2025,excl. IPCEI firms,13889,9946,3897,71.8
+Heat_Pumps,2020 only,all,450,368,82,81.8
+Heat_Pumps,2020 only,excl. IPCEI firms,440,359,81,81.6
+Railway,2020-2025,all,6888,4844,1999,70.8
+Railway,2020-2025,excl. IPCEI firms,6210,4268,1897,69.2
+Railway,2020 only,all,262,201,60,77.0
+Railway,2020 only,excl. IPCEI firms,243,183,59,75.6
+Electric_Shipping,2020-2025,all,16207,11363,4758,70.5
+Electric_Shipping,2020-2025,excl. IPCEI firms,15462,10692,4684,69.5
+Electric_Shipping,2020 only,all,382,288,94,75.4
+Electric_Shipping,2020 only,excl. IPCEI firms,362,271,91,74.9
+Electric_Aviation,2020-2025,all,6234,3970,2243,63.9
+Electric_Aviation,2020-2025,excl. IPCEI firms,5939,3754,2164,63.4
+Electric_Aviation,2020 only,all,183,134,49,73.2
+Electric_Aviation,2020 only,excl. IPCEI firms,173,126,47,72.8
+Fuel_Cell_Aviation,2020-2025,all,6540,4714,1805,72.3
+Fuel_Cell_Aviation,2020-2025,excl. IPCEI firms,5422,3853,1548,71.3
+Fuel_Cell_Aviation,2020 only,all,134,105,29,78.4
+Fuel_Cell_Aviation,2020 only,excl. IPCEI firms,106,83,23,78.3
+Other_Technology,2020-2025,all,37250,26178,10872,70.7
+Other_Technology,2020-2025,excl. IPCEI firms,35600,24883,10517,70.3
+Other_Technology,2020 only,all,1515,1174,337,77.7
+Other_Technology,2020 only,excl. IPCEI firms,1394,1076,314,77.4
+All technologies,2020-2025,all,679259,460110,215329,68.1
+All technologies,2020-2025,excl. IPCEI firms,623158,417406,201932,67.4
+All technologies,2020 only,all,24977,18571,6374,74.4
+All technologies,2020 only,excl. IPCEI firms,22696,16807,5857,74.2

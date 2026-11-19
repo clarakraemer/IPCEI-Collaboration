@@ -1,0 +1,11 @@
+Activity,Technology,ctrl_delta
+R&D,Battery,3.5
+Demonstration / pilot,Battery,-0.1
+Production / manufacturing,Battery,0.3
+Commercialisation,Battery,-1.4
+Adoption / deployment,Battery,-12.4
+R&D,Hydrogen,-2.0
+Demonstration / pilot,Hydrogen,0.2
+Production / manufacturing,Hydrogen,1.3
+Commercialisation,Hydrogen,1.2
+Adoption / deployment,Hydrogen,1.1

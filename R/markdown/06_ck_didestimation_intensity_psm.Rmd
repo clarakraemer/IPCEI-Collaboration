@@ -139,7 +139,11 @@ hydrogen_s1 %>%
 # for hydrogen.
 cg_for <- function(technology) "nevertreated"
 
-run_cs <- function(df, yname = "log_collabs", label = "", xformla = NULL, control_group = "notyettreated", clustervars = NULL) {
+# control_group default was "notyettreated", which contradicted cg_for() and the
+# default in _cs_helpers.R. Every call site passes it explicitly, so this default
+# never fired and aligning it changes no estimate; it removes the trap of a
+# future call silently using the wrong comparison group. Same fix as in 07.
+run_cs <- function(df, yname = "log_collabs", label = "", xformla = NULL, control_group = "nevertreated", clustervars = NULL) {
   
   cat("\n=== C&S:", label, "===\n")
   
@@ -357,116 +361,129 @@ ggsave("../results/psm/intensity/cs_hydrogen_s2_eventstudy.pdf", p4, width = 10,
 
 ---
 
-# 3. Power Simulation (Egerod & Hollenbach approach)
+# 3. Power simulation (total collaborations)
 
-Simulate on real control-group data to preserve empirical variance and
-autocorrelation structure, then inject an artificial ATT.
+Simulate on real control-group data to preserve the empirical variance and
+autocorrelation structure, then inject an artificial ATT and record the
+rejection rate at the 5% level
+(Egerod & Hollenbach 2024; Black et al. 2022).
 
-```{r power-function}
-run_power_sim <- function(cs_data, att_true, n_sims = 200,
-                          label = "", n_treated_target = NULL,
-                          control_group = "notyettreated") {
-  
-  # Use only control firms as the empirical baseline
-  controls_df <- cs_data[cs_data$is_control == 1, ]
-  control_names <- unique(controls_df$Linkedin_name)
-  n_controls    <- length(control_names)
-  
-  # Cohort structure: mimic real treated cohort timing
-  real_cohorts <- cs_data %>%
-    filter(is_treated == 1) %>%
-    distinct(Linkedin_name, g_period) %>%
-    count(g_period) %>%
-    arrange(g_period)
-  
-  cat(sprintf("[%s] ATT=%.2f | Cohorts: %s\n",
-              label, att_true,
-              paste(real_cohorts$g_period, collapse = ", ")))
-  
-  results <- numeric(n_sims)
-  
-  for (i in seq_len(n_sims)) {
-    
-    if (i %% 25 == 0) { # shows whether R is alive during hibernation run
-      cat(sprintf("[%s] simulation %d / %d\n", label, i, n_sims))
-    }
-    
-    available <- control_names
-    treated_pool <- character(0)
-    g_vec        <- integer(0)
-    
-    # Sample from controls to fill each cohort
-    for (k in seq_len(nrow(real_cohorts))) {
-      n_k    <- real_cohorts$n[k]
-      cohort <- real_cohorts$g_period[k]
-      
-      if (length(available) < n_k) break
-      
-      sampled    <- sample(available, n_k, replace = FALSE)
-      available  <- setdiff(available, sampled)
-      treated_pool <- c(treated_pool, sampled)
-      g_vec        <- c(g_vec, rep(cohort, n_k))
-    }
-    
-    # Assign groups
-    g_lookup <- data.frame(Linkedin_name = treated_pool,
-                           g_sim = g_vec,
-                           stringsAsFactors = FALSE)
-    
-    sim_treated <- controls_df %>%
-      filter(Linkedin_name %in% treated_pool) %>%
-      left_join(g_lookup, by = "Linkedin_name") %>%
-      mutate(
-        post_sim = as.integer(period >= g_sim),
-        log_collabs_sim = log_collabs + att_true * post_sim,
-        g_period_sim = g_sim,
-        is_treated_sim = 1L
-      )
-    
-    sim_controls <- controls_df %>%
-      filter(Linkedin_name %in% available) %>%
-      mutate(
-        log_collabs_sim = log_collabs,
-        g_period_sim    = 0L,
-        is_treated_sim  = 0L
-      )
-    
-    sim_data <- bind_rows(sim_treated, sim_controls) %>%
-      mutate(firm_id_sim = as.integer(factor(Linkedin_name)))
-    
-    # Run C&S on simulated data
-    result <- tryCatch({
-      cs_sim <- att_gt(
-        yname         = "log_collabs_sim",
-        tname         = "period",
-        idname        = "firm_id_sim",
-        gname         = "g_period_sim",
-        control_group = control_group,
-        anticipation  = 0,
-        bstrap        = FALSE,
-        #biters        = 199,   # fewer iters for speed in simulation
-        panel         = TRUE,
-        print_details = FALSE,
-        data          = sim_data
-      )
-      agg_sim <- aggte(cs_sim, type = "simple")
-      z_stat  <- agg_sim$overall.att / agg_sim$overall.se
-      as.integer(abs(z_stat) > 1.96)
-    }, error = function(e) NA_integer_)
-    
-    results[i] <- result
-  }
-  
-  mean(results, na.rm = TRUE)
+Total collaboration is insignificant in both technologies ($p = 0.253$ battery,
+$p = 0.275$ hydrogen), so power evidence would decide whether "no detectable
+change in total collaboration" means no change or means the design cannot see
+one. It is reported alongside the composition outcomes, whose power curves are
+produced by `07_..._psm.Rmd` on the same effect grid.
+
+**Open decision (Nov 2026): whether this outcome belongs in the SI power
+figure at all.** Total collaboration is the sum of the technology-related and
+technology-unrelated rows of Table 1, where the first is positive and the second
+is a precise zero, so its null is arithmetic rather than a finding: an increase
+concentrated in one component, diluted by a larger component that does not move.
+No claim in the paper rests on it. It is also the weakest-powered cell in the
+whole design (battery spec 1 reaches only 0.53 power against a 20% effect), so
+including it invites "the design is underpowered" as a blanket charge instead of
+a statement about one aggregate. Leave `RUN_POWER <- FALSE` here unless the
+manuscript asserts somewhere that overall collaboration volume did not rise, in
+which case that claim needs this curve and the honest number has to be reported.
+
+**RESOLVED (18 Nov 2026): the condition is met, so this outcome IS simulated.**
+`RUN_POWER` stays `FALSE` in the setup chunk purely so a plain knit remains
+fast; the power chunks are run deliberately, with the flag overridden, exactly
+as section 9 of script 07 is. The
+results section states "Total collaboration rises by 21% for battery firms
+($p = 0.253$) and 10% for hydrogen firms ($p = 0.275$), neither of which is
+statistically significant", and that sentence carries part of the
+redirection-rather-than-general-rise argument. Two warnings attach to the
+number this produces. First, the 0.53 quoted above came from the
+placebo-from-controls design, which overstated power everywhere, so the
+corrected battery figure will be LOWER, not higher. Second, battery's size
+check runs hot (0.067--0.084 on the composition cells at 29 clusters), so read
+the zero row before quoting the MDE. If the honest curve turns out too weak to
+support the sentence, the fix is to delete the sentence, not to hide the curve:
+the technology-unrelated benchmark already carries the redirection argument and
+is the better evidence for it.
+
+The simulation function itself now lives in `_cs_helpers.R`, so this file and
+07 run the same code. Two things changed when it moved: the control group is
+passed in rather than defaulting to not-yet-treated, and every cell is seeded
+from its own (outcome, label, effect size), so a run is reproducible whatever
+else ran before it in the session.
+
+Output is `power_intensity_long.csv`, in the same long schema as
+`power_all_outcomes.csv` so notebook 08 can stack them into one SI figure. The
+older wide `power_simulation_results.csv` is left on disk and superseded.
+
+```{r power-helpers}
+.power_env <- new.env()
+sys.source("_cs_helpers.R", envir = .power_env)
+run_power_sim  <- .power_env$run_power_sim
+mde_at         <- .power_env$mde_at
+POWER_PCT_GRID <- .power_env$POWER_PCT_GRID   # 5, 10, 15, 20, 30, 40 (%)
+POWER_LOG_GRID <- .power_env$POWER_LOG_GRID   # the same grid in log points
+
+# Draws per (cell, effect size). The Monte Carlo SE of a power estimate is at
+# most 0.5/sqrt(n_sims), so 2.2 points at 500.
+N_SIMS_POWER <- 500   # matched to section 9 of script 07; see the note there
+
+# Zero is prepended to the grid as a size check, and 199 bootstrap draws run
+# inside each simulated draw. Both mirror section 9 of script 07; the reasoning
+# is in the run_power_sim header in _cs_helpers.R.
+POWER_GRID_RUN <- c(0, POWER_LOG_GRID)
+BITERS_SIM     <- 199
+
+# The effect sizes of a cell run in parallel, so one core per size keeps a
+# cell to a single draw-batch of wall clock. Leave one core for the machine.
+POWER_CORES <- max(1L, min(length(POWER_GRID_RUN),
+                           parallel::detectCores() - 1L))
+
+# Total collaborations across all technologies: the reported intensity outcome.
+POWER_OUTCOME <- "log_collabs"
+
+# Spec 2 (larger control group) doubles the runtime and is a robustness check,
+# not a reported estimate. Off by default.
+RUN_POWER_SPEC2 <- FALSE
+```
+
+```{r power-cells}
+power_cells <- list(
+  list(Technology = "Battery",  Spec = "Spec 1", df = battery_s1),
+  list(Technology = "Hydrogen", Spec = "Spec 1", df = hydrogen_s1)
+)
+if (RUN_POWER_SPEC2) power_cells <- c(power_cells, list(
+  list(Technology = "Battery",  Spec = "Spec 2", df = battery_s2),
+  list(Technology = "Hydrogen", Spec = "Spec 2", df = hydrogen_s2)
+))
+
+cat("\n=== Power cells ===\n")
+for (cell in power_cells)
+  cat(sprintf("  %-9s %-7s  N firms = %d\n", cell$Technology, cell$Spec,
+              length(unique(cell$df$Linkedin_name))))
+stopifnot(POWER_OUTCOME %in% names(battery_s1),
+          POWER_OUTCOME %in% names(hydrogen_s1))
+```
+
+```{r power-timing, eval=RUN_POWER}
+# Budget the run before starting it: time one draw per cell and extrapolate.
+for (cell in power_cells) {
+  el <- system.time(
+    run_power_sim(cell$df, POWER_OUTCOME, POWER_LOG_GRID[1],
+                  cg_for(tolower(cell$Technology)), n_sims = 2,
+                  label = paste("timing", cell$Technology, cell$Spec),
+                  biters_sim = BITERS_SIM)
+  )[["elapsed"]] / 2
+  tot <- el * N_SIMS_POWER * length(POWER_GRID_RUN)
+  cat(sprintf("%-9s %-7s %.2f s/draw -> %.2f h serial for this cell\n",
+              cell$Technology, cell$Spec, el, tot / 3600))
 }
+cat("Divide by mc.cores for the wall-clock estimate.\n")
 ```
 
 ```{r power-run, eval=RUN_POWER}
 library(parallel)
 
-# Robust parallelism: fork when available, but fall back to serial if the fork
+# Robust parallelism: fork when available, fall back to serial if the fork
 # workers fail (e.g. a non-interactive session), so an overnight run never
-# silently returns no results. Shadows parallel::mclapply for the calls below.
+# silently returns no results.
 mclapply <- function(X, FUN, ..., mc.cores = min(4L, parallel::detectCores())) {
   res <- tryCatch(parallel::mclapply(X, FUN, ..., mc.cores = mc.cores),
                   error = function(e) base::lapply(X, FUN))
@@ -475,180 +492,96 @@ mclapply <- function(X, FUN, ..., mc.cores = min(4L, parallel::detectCores())) {
   res
 }
 
-# ATT grid: effects of 5% to 30% increase in collaboration count
-# On log scale: log(1 + effect) ≈ effect for small effects
-att_grid <- log(1 + c(0.05, 0.10, 0.15, 0.20, 0.25, 0.30))
+power_rows <- list()
+for (cell in power_cells) {
+  lbl <- paste(cell$Technology, "--", cell$Spec, "-- Total collaborations")
+  cat("Power simulation:", lbl, "\n")
 
-# --- Hydrogen Spec 1 (balance) ---
-cat("Running power simulation: Hydrogen Spec 1\n")
-power_h_s1 <- unlist(
-  mclapply(att_grid, function(a)
-    run_power_sim(hydrogen_s1, a, n_sims = 200, label = "H-S1", control_group = cg_for("hydrogen")),
-  mc.cores = 4)
-)
+  # The reported estimate for this technology, so the CSV carries the same
+  # ATT / p_value columns as the composition file, and so att_hat can impose
+  # the null: the estimated effect is removed from the treated firms'
+  # post-periods before the hypothesised one is added, making the true effect
+  # in a draw `a` rather than `a` on top of what the data already contain.
+  ref <- att_table[att_table$Specification == cell$Technology &
+                     att_table$Type == "Primary", , drop = FALSE]
+  att_ref <- if (nrow(ref)) ref$ATT[1] else 0
 
-# --- Hydrogen Spec 2 (power) ---
-cat("Running power simulation: Hydrogen Spec 2\n")
-power_h_s2 <- unlist(
-  mclapply(att_grid, function(a)
-    run_power_sim(hydrogen_s2, a, n_sims = 200, label = "H-S2", control_group = cg_for("hydrogen")),
-  mc.cores = 4)
-)
+  grid_rows <- mclapply(POWER_GRID_RUN, function(a)
+    run_power_sim(cell$df, POWER_OUTCOME, a,
+                  cg_for(tolower(cell$Technology)),
+                  n_sims = N_SIMS_POWER, label = lbl,
+                  att_hat = att_ref, biters_sim = BITERS_SIM),
+    mc.cores = POWER_CORES)
+  grid_rows <- grid_rows[!vapply(grid_rows, is.null, logical(1))]
+  if (!length(grid_rows)) next
 
-# --- Battery Spec 1 (balance) ---
-cat("Running power simulation: Battery Spec 1\n")
-power_b_s1 <- unlist(
-  mclapply(att_grid, function(a)
-    run_power_sim(battery_s1, a, n_sims = 200, label = "B-S1", control_group = cg_for("battery")),
-  mc.cores = 4)
-)
+  out <- do.call(rbind, grid_rows)
+  out$Technology  <- cell$Technology
+  out$Outcome     <- "Total collaborations"
+  out$Type        <- "Benchmark"
+  out$key         <- "intensity"
+  out$yname       <- POWER_OUTCOME
+  out$Spec        <- cell$Spec
+  out$ATT         <- if (nrow(ref)) ref$ATT[1] else NA_real_
+  out$p_value     <- if (nrow(ref)) ref$p_value[1] else NA_real_
+  out$significant <- !is.na(out$p_value) & out$p_value < 0.10
+  power_rows[[length(power_rows) + 1]] <- out
+}
 
-# --- Battery Spec 2 (power) ---
-cat("Running power simulation: Battery Spec 2\n")
-power_b_s2 <- unlist(
-  mclapply(att_grid, function(a)
-    run_power_sim(battery_s2, a, n_sims = 200, label = "B-S2", control_group = cg_for("battery")),
-  mc.cores = 4)
-)
+power_intensity <- do.call(rbind, power_rows)
+power_intensity <- power_intensity[, c("Technology", "Outcome", "Type", "key",
+                                       "yname", "Spec", "att_log", "att_pct",
+                                       "power", "n_draws", "n_sims", "ATT",
+                                       "p_value", "significant")]
+print(power_intensity, row.names = FALSE)
+write.csv(power_intensity,
+          "../results/psm/intensity/power_intensity_long.csv", row.names = FALSE)
 
-power_results <- data.frame(
-  att_pct       = round((exp(att_grid) - 1) * 100, 1),
-  att_log       = round(att_grid, 3),
-  power_h_s2    = round(power_h_s2, 3),   # primary first
-  power_b_s2    = round(power_b_s2, 3),   # primary first
-  power_h_s1    = round(power_h_s1, 3),   # robustness
-  power_b_s1    = round(power_b_s1, 3)    # robustness
-)
+bad <- power_intensity[power_intensity$n_draws < power_intensity$n_sims, ]
+if (nrow(bad)) {
+  cat("\n!! draws that did not converge:\n"); print(bad, row.names = FALSE)
+}
+```
 
-print(power_results)
-write.csv(power_results, "../results/psm/intensity/power_simulation_results.csv",
+```{r power-mde, eval=RUN_POWER}
+power_mde_int <- do.call(rbind, lapply(
+  split(power_intensity, list(power_intensity$Technology, power_intensity$Spec),
+        drop = TRUE),
+  function(d) data.frame(
+    Technology  = d$Technology[1],
+    Spec        = d$Spec[1],
+    Outcome     = "Total collaborations",
+    ATT         = d$ATT[1],
+    p_value     = d$p_value[1],
+    mde_pct     = round(mde_at(d$att_pct, d$power, 0.80), 1),
+    power_at_10 = d$power[which.min(abs(d$att_pct - 10))],
+    power_at_20 = d$power[which.min(abs(d$att_pct - 20))],
+    # Rejection rate at a true effect of zero; must sit near 0.05 or the MDE
+    # on that row is void. Read this before quoting anything.
+    size        = d$power[which(abs(d$att_log) < 1e-12)[1]],
+    stringsAsFactors = FALSE)))
+cat("\n=== Minimum detectable effect at 80% power ===\n")
+cat("NA = the curve never reaches 80% over the grid tested.\n")
+print(power_mde_int, row.names = FALSE)
+write.csv(power_mde_int, "../results/psm/intensity/power_mde_intensity.csv",
           row.names = FALSE)
 ```
 
-```{r power-load, eval=RUN_POWER}
-# once power analysis ran, otherwise remove eval = FALSE
-power_results <- read.csv("../results/psm/intensity/power_simulation_results.csv")
-```
-
-```{r power-plot, eval=RUN_POWER}
-
-# --- Estimated effects from main ATT results ---
-att_h <- (exp(agg_hydrogen_s1_simple$overall.att) - 1) * 100
-att_b <- (exp(agg_battery_s1_simple$overall.att)  - 1) * 100
-
-# --- Reshape data for plotting ---
-power_long <- power_results %>%
-  pivot_longer(cols = starts_with("power_"),
-               names_to  = "spec",
-               values_to = "power") %>%
-  mutate(
-    spec = recode(spec,
-      power_h_s2 = "Hydrogen — primary (N=365)",
-      power_b_s2 = "Battery — primary (N=224)",
-      power_h_s1 = "Hydrogen — robustness (N=277)",
-      power_b_s1 = "Battery — robustness (N=168)"
-    ),
-    spec = factor(spec, levels = c(
-      "Hydrogen — primary (N=365)",
-      "Battery — primary (N=224)",
-      "Hydrogen — robustness (N=277)",
-      "Battery — robustness (N=168)"
-    ))
-  )
-
-# --- Plot ---
-p_power <- ggplot(power_long,
-                  aes(att_pct, power, colour = spec, shape = spec)) +
-
-  geom_line(aes(linewidth = spec, alpha = spec)) +
-  geom_point(size = 3) +
-
-  # 80% power threshold
-  geom_hline(yintercept = 0.80,
-             linetype = "dashed",
-             colour = "grey40",
-             linewidth = 0.8) +
-
-  # Estimated effects
-  geom_vline(xintercept = att_h,
-             linetype = "longdash",
-             colour = "#1f77b4",
-             linewidth = 1) +
-  geom_vline(xintercept = att_b,
-             linetype = "longdash",
-             colour = "#2ca02c",
-             linewidth = 1) +
-
-  # Label estimated effects
-  annotate("text",
-           x = att_h,
-           y = 0.15,
-           label = "Hydrogen total collaborations",
-           angle = 90,
-           colour = "#1f77b4",
-           size = 3,
-           vjust = 1.5) +
-
-  annotate("text",
-           x = att_b,
-           y = 0.15,
-           label = "Battery total collaborations",
-           angle = 90,
-           colour = "#2ca02c",
-           size = 3,
-           vjust = 1.5) +
-
-  # Label for 80% threshold
-  annotate("text",
-           x = min(power_results$att_pct) + 1,
-           y = 0.84,
-           label = "",
-           colour = "grey40",
-           size = 3.5,
-           hjust = 0) +
-
-  scale_y_continuous(limits = c(0,1),
-                     labels = scales::percent) +
-
-  scale_colour_manual(values = c(
-    "Hydrogen — primary (N=365)"    = "#1f77b4",
-    "Battery — primary (N=224)"     = "#2ca02c",
-    "Hydrogen — robustness (N=277)" = "#aec7e8",
-    "Battery — robustness (N=168)"  = "#98df8a"
-  )) +
-  scale_linewidth_manual(values = c(
-    "Hydrogen — primary (N=365)"    = 1.1,
-    "Battery — primary (N=224)"     = 1.1,
-    "Hydrogen — robustness (N=277)" = 0.7,
-    "Battery — robustness (N=168)"  = 0.7
-  )) +
-  scale_alpha_manual(values = c(
-    "Hydrogen — primary (N=365)"    = 1,
-    "Battery — primary (N=224)"     = 1,
-    "Hydrogen — robustness (N=277)" = 0.5,
-    "Battery — robustness (N=168)"  = 0.5
-  )) +
-
-  labs(
-    x = "True treatment effect (% change in collaborations)",
-    y = "Simulated Power",
-    colour = NULL,
-    shape = NULL,
-    linewidth = NULL,
-    alpha = NULL
-    #title = "Power Simulation — C&S Estimator on Matched Samples",
-    #caption = "200 simulation runs per ATT level. Baseline DGP from real control-group data."
-  ) +
-
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
-
+```{r power-plot-check, eval=RUN_POWER}
+# Working check only. The SI figure is drawn in notebook 08 from the CSVs.
+p_power <- ggplot(power_intensity,
+                  aes(att_pct, power, colour = Technology, linetype = Spec)) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
+  geom_line(linewidth = 0.9) + geom_point(size = 2) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  scale_colour_manual(values = c(Hydrogen = "#1f77b4", Battery = "#2ca02c")) +
+  labs(x = "True treatment effect (% change in collaborations)",
+       y = "Simulated power", colour = NULL, linetype = NULL,
+       title = "Total collaborations (working check)") +
+  theme_minimal(base_size = 12) + theme(legend.position = "bottom")
 print(p_power)
-
-ggsave("../results/psm/intensity/power_simulation_plot.pdf",
-       p_power,
-       width = 9,
-       height = 6)
+ggsave("../results/psm/intensity/power_intensity_check.pdf",
+       p_power, width = 9, height = 6)
 ```
 
 ---

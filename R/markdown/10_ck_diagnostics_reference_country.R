@@ -9,6 +9,7 @@
 # Part 2  cohort-level ATTs and Germany-exclusion sensitivity
 # Part 3  approval-month vs later event-time split
 # Part 5  funded-vs-unrelated difference outcome, raw counts
+# Part 6  power simulation for the direct contrasts
 #
 # Run:  Rscript 10_ck_diagnostics_reference_country.R
 # Section flags below keep the slow bootstrap runs separable from the
@@ -422,6 +423,24 @@ if (RUN_P2_P5) {
     rel_tech = "Relative technology (log diff)",
     rel_geo  = "Relative geography, EU-internal minus international (log diff)")
 
+  # Added Nov 2026 and deliberately estimated LAST, after every block that was
+  # already published, so the bootstrap stream reaching those blocks is
+  # unchanged and their p-values reproduce exactly.
+  LATE <- list(
+    rel_sector   = "Relative sector, cross-sector minus same-sector (log diff)",
+    cross_border = "EU cross-border, broader definition (log diff)")
+
+  # Broader geographic definition, reported as a bridge to the strict one.
+  # cl_eu_internal counts a collaboration only if EVERY participant is in the
+  # EU, so a German-French-American consortium is classified international even
+  # though two member states cooperate in it. About a third of collaborations
+  # spanning two or more EU countries fall into that case. The dyad-level
+  # cross_border outcome instead counts a collaboration whenever the firm itself
+  # has a partner in another EU member state, whether or not a non-EU
+  # participant is also present, which is closer to the wording of the scheme's
+  # condition. It is non-exclusive by construction, hence a supplementary
+  # estimate rather than a replacement.
+
   for (tech in c("Battery", "Hydrogen")) {
     sdf <- panels[[tech]]
     tl  <- tolower(tech)
@@ -487,11 +506,190 @@ if (RUN_P2_P5) {
       }
     }
   }
+  # ---- 5b sectoral contrast and the broader EU definition ----------------
+  # Appended after everything above so the published estimates keep their
+  # bootstrap draws. The sectoral contrast completes the set of three
+  # mutually exclusive pairs; the broader EU outcome bridges the strict
+  # EU-internal definition to the wording of the scheme's condition.
+  cat("\n\n######## PART 5b: sectoral contrast and broader EU definition ########\n")
+  for (tech in c("Battery", "Hydrogen")) {
+    sdf <- panels[[tech]]
+    tl  <- tolower(tech)
+    for (lk in names(LATE)) {
+      y <- outcome_map[[lk]][[tl]]
+      if (!(y %in% names(sdf))) { cat("missing column:", y, "\n"); next }
+      cs <- run_cs(sdf, y, label = sprintf("%s %s", tech, lk), biters = BITERS_DX)
+      ag <- agg_simple(cs); if (is.null(ag)) next
+      p5[[paste(tech, lk)]] <- data.frame(
+        technology = tech, outcome = LATE[[lk]],
+        anticipation = 0, att = round(ag$overall.att, 4),
+        se = round(ag$overall.se, 4),
+        p = pval_from_att(ag$overall.att, ag$overall.se),
+        lo = round(ag$overall.att - 1.96 * ag$overall.se, 4),
+        hi = round(ag$overall.att + 1.96 * ag$overall.se, 4),
+        pretrend_p = es_pretrend(cs)$p)
+    }
+  }
+
   if (length(p5)) {
     pp <- bind_rows(p5)
     write.csv(pp, file.path(OUT, "p5_relative_and_counts.csv"), row.names = FALSE)
     cat("\n-- relative-technology and raw-count ATTs --\n")
     print(as.data.frame(pp), row.names = FALSE)
+  }
+}
+
+
+# ============================================================
+# PART 6: power simulation for the direct contrasts
+# ============================================================
+# The contrasts carry the paper's strongest negative claims, above all
+# "the sectoral mix is unchanged", so they are the outcomes where the
+# difference between "no effect" and "cannot tell" matters most.
+#
+# A caveat worth keeping in view: where the confidence interval is already
+# tight, the interval is BETTER evidence than a simulated power curve. The
+# battery sectoral contrast is 0.000 with SE 0.050, so it rules out anything
+# beyond roughly +/- 0.10 log points directly, with no assumption about an
+# imposed constant effect. Power simulation earns its place for the wide
+# nulls. Both are produced here; use the one that fits the claim.
+#
+# Note on units: a contrast outcome is a difference of two log1p counts, so
+# `att_true` is a shift in that DIFFERENCE. The att_pct column is carried for
+# a common axis with the other power files, but for contrasts read att_log.
+
+RUN_P6_POWER <- FALSE    # slow: set TRUE for the overnight run
+
+CONTRASTS <- list(
+  rel_tech   = "Relative technology (log diff)",
+  rel_geo    = "Relative geography, EU-internal minus international (log diff)",
+  rel_sector = "Relative sector, cross-sector minus same-sector (log diff)"
+)
+
+N_SIMS_POWER <- 500   # matched to section 9 of script 07; see the note there
+
+# Zero is prepended to the grid as a size check and 199 bootstrap draws run
+# inside each simulated draw. Both mirror section 9 of script 07; the reasoning
+# is in the run_power_sim header in _cs_helpers.R.
+POWER_GRID_RUN <- c(0, POWER_LOG_GRID)
+BITERS_SIM     <- 199
+
+# The effect sizes of a cell run in parallel, so one core per size keeps a
+# cell to a single draw-batch of wall clock. Leave one core for the machine.
+POWER_CORES <- max(1L, min(length(POWER_GRID_RUN),
+                           parallel::detectCores() - 1L))
+
+if (RUN_P6_POWER) {
+  library(parallel)
+  # Fork when available, fall back to serial if the workers fail, so an
+  # overnight run never silently returns no results.
+  mclapply <- function(X, FUN, ..., mc.cores = POWER_CORES) {
+    res <- tryCatch(parallel::mclapply(X, FUN, ..., mc.cores = mc.cores),
+                    error = function(e) base::lapply(X, FUN))
+    if (any(vapply(res, function(z) inherits(z, "try-error"), logical(1))))
+      res <- base::lapply(X, FUN)
+    res
+  }
+
+  cat("\n\n######## PART 6: power simulation, direct contrasts ########\n")
+
+  # Reported ATTs for these outcomes, if Part 5 has already been run, so the
+  # output carries the same ATT / p_value columns as the other power files.
+  p5_path <- file.path(OUT, "p5_relative_and_counts.csv")
+  p5_ref  <- if (file.exists(p5_path)) read.csv(p5_path, stringsAsFactors = FALSE)
+             else NULL
+
+  # One timed draw per technology, so the run can be budgeted before it starts.
+  for (tech in c("Battery", "Hydrogen")) {
+    y <- outcome_map[["rel_sector"]][[tolower(tech)]]
+    if (!(y %in% names(panels[[tech]]))) next
+    el <- system.time(
+      run_power_sim(panels[[tech]], y, POWER_LOG_GRID[1], cg_for(tolower(tech)),
+                    n_sims = 2, label = paste("timing", tech),
+                    biters_sim = BITERS_SIM)
+    )[["elapsed"]] / 2
+    cat(sprintf("%-9s %.2f s/draw x %d sims x %d sizes x %d contrasts = %.2f h serial\n",
+                tech, el, N_SIMS_POWER, length(POWER_GRID_RUN),
+                length(CONTRASTS),
+                el * N_SIMS_POWER * length(POWER_GRID_RUN) *
+                  length(CONTRASTS) / 3600))
+  }
+
+  p6 <- list()
+  for (tech in c("Battery", "Hydrogen")) {
+    sdf <- panels[[tech]]
+    tl  <- tolower(tech)
+    for (ck in names(CONTRASTS)) {
+      y <- outcome_map[[ck]][[tl]]
+      if (!(y %in% names(sdf))) { cat("missing column:", y, "\n"); next }
+      lbl <- paste(tech, "--", CONTRASTS[[ck]])
+
+      ref <- if (!is.null(p5_ref))
+        p5_ref[p5_ref$technology == tech &
+                 p5_ref$outcome == CONTRASTS[[ck]] &
+                 p5_ref$anticipation == 0, , drop = FALSE] else NULL
+      p_ref <- if (!is.null(ref) && nrow(ref)) ref$p[1] else NA_real_
+
+      # Only the null contrasts are simulated, on the same rule as section 9 of
+      # script 07: a contrast that is significant needs no power defence.
+      if (!is.na(p_ref) && p_ref < 0.10) {
+        cat("skipping (significant, p =", sprintf("%.3f", p_ref), "):", lbl, "\n")
+        next
+      }
+      cat("Power simulation:", lbl, "(", y, ")\n")
+
+      # att_hat imposes the null, so the true effect in a draw is `a` rather
+      # than `a` on top of the contrast the data already carry.
+      att_ref <- if (!is.null(ref) && nrow(ref)) ref$att[1] else 0
+      rows <- mclapply(POWER_GRID_RUN, function(a)
+        run_power_sim(sdf, y, a, cg_for(tl), n_sims = N_SIMS_POWER, label = lbl,
+                      att_hat = att_ref, biters_sim = BITERS_SIM),
+        mc.cores = POWER_CORES)
+      rows <- rows[!vapply(rows, is.null, logical(1))]
+      if (!length(rows)) next
+
+      out <- do.call(rbind, rows)
+      out$Technology  <- tech
+      out$Outcome     <- CONTRASTS[[ck]]
+      out$Type        <- "Contrast"
+      out$key         <- ck
+      out$yname       <- y
+      out$ATT         <- if (!is.null(ref) && nrow(ref)) ref$att[1] else NA_real_
+      out$p_value     <- p_ref
+      out$significant <- !is.na(p_ref) & p_ref < 0.10
+      p6[[length(p6) + 1]] <- out
+    }
+  }
+
+  if (length(p6)) {
+    power_contrasts <- bind_rows(p6)
+    power_contrasts <- power_contrasts[, c("Technology", "Outcome", "Type",
+                                           "key", "yname", "att_log", "att_pct",
+                                           "power", "n_draws", "n_sims",
+                                           "ATT", "p_value", "significant")]
+    write.csv(power_contrasts, file.path(OUT, "p6_power_contrasts.csv"),
+              row.names = FALSE)
+    cat("\n-- power curves, direct contrasts --\n")
+    print(as.data.frame(power_contrasts), row.names = FALSE)
+
+    mde <- do.call(rbind, lapply(
+      split(power_contrasts, list(power_contrasts$Technology,
+                                  power_contrasts$Outcome), drop = TRUE),
+      function(d) data.frame(
+        technology = d$Technology[1],
+        outcome    = d$Outcome[1],
+        att        = d$ATT[1],
+        p          = d$p_value[1],
+        mde_log    = round(mde_at(d$att_log, d$power, 0.80), 4),
+        mde_pct    = round(mde_at(d$att_pct, d$power, 0.80), 1),
+        # Rejection rate at a true effect of zero; must sit near 0.05 or the
+        # MDE on that row is void. Read this before quoting anything.
+        size       = d$power[which(abs(d$att_log) < 1e-12)[1]],
+        stringsAsFactors = FALSE)))
+    write.csv(mde, file.path(OUT, "p6_power_contrasts_mde.csv"),
+              row.names = FALSE)
+    cat("\n-- minimum detectable effect at 80% power (NA = never reached) --\n")
+    print(as.data.frame(mde), row.names = FALSE)
   }
 }
 

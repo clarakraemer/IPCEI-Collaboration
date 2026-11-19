@@ -1,0 +1,3 @@
+"Technology","Spec","Outcome","ATT","p_value","mde_pct","power_at_10","power_at_20","size"
+"Battery","Spec 1","Total collaborations",0.1874,0.253,NA,0.062,0.178,0.09
+"Hydrogen","Spec 1","Total collaborations",0.0932,0.275,27.5,0.214,0.596,0.064
