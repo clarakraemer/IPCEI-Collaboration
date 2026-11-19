@@ -29,10 +29,9 @@ all estimation and never constructs data.
 | `R/markdown/_cs_helpers.R` | Shared estimation helpers used by all methods |
 | `R/data/`, `R/results/` | What R consumes and produces. Git-ignored |
 | `publish/` | The public replication bundle (see `publish/README.md`) |
-| `CLAUDE.md` | Working notes: every methodological decision and why it was made |
 
-`CLAUDE.md` is the project's decision log. If you want to know why a choice was
-made rather than what the code does, read it first.
+Methodological decisions, including the alternatives that were tried and
+rejected, are documented in the comments of the scripts that implement them.
 
 ## Pipeline
 

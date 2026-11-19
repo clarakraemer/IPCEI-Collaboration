@@ -68,8 +68,8 @@ the matching structure survives.
 `results/ebal/` is an entropy-balancing arm that is kept as a robustness reply
 but not featured, because it fails the battery pre-trend test.
 `consortium_size_att.csv` and the `honestdid_*` files are analyses we ran and
-then deliberately did not use; the reasoning for each is in `CLAUDE.md` in the
-code repository. Anything reported in the paper is in `tables/`.
+then deliberately did not use; the reasoning for each is in the comments of the
+script that produces it. Anything reported in the paper is in `tables/`.
 
 ## Reproducing the estimates
 

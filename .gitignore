@@ -29,6 +29,9 @@ venv/
 # effect only once untracked (git rm --cached).
 .claude/settings.local.json
 
+# Local working notes, kept off the public repo by choice.
+CLAUDE.md
+
 # ===============================
 # PROJECT RULES — data + outputs stay out, both sides
 # ===============================
